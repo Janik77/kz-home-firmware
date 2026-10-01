@@ -4,3 +4,17 @@ sdkconfig.old
 .vscode/
 .idea/
 *.log
+local/
+**/managed_components/
+**/sdkconfig.local*
+**/sdkconfig.h
+**/sdkconfig.cmake
+__pycache__/
+.env
+.env.*
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+.zig-cache/
