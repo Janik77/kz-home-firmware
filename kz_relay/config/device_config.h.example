@@ -1,0 +1,13 @@
+#pragma once
+/* Copy to ../local/device_config.h; fill locally. Never commit that file.
+ * Supply the operator-approved public CA as ../local/broker_ca.pem separately.
+ * No server private key or client certificate is used. */
+#define KZ_WIFI_SSID ""
+#define KZ_WIFI_PASSWORD ""
+#define KZ_MQTT_HOST ""
+#define KZ_MQTT_PORT 8883
+#define KZ_MQTT_USERNAME ""
+#define KZ_MQTT_PASSWORD ""
+#define KZ_HOUSE_ID ""
+#define KZ_DEVICE_ID ""
+#define KZ_TIME_SERVER ""
