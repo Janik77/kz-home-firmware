@@ -8,6 +8,7 @@ local/
 **/managed_components/
 **/sdkconfig.local*
 **/sdkconfig.h
+!tests/board_stubs/sdkconfig.h
 **/sdkconfig.cmake
 __pycache__/
 .env
@@ -18,3 +19,4 @@ __pycache__/
 *.p12
 *.pfx
 .zig-cache/
+.venv/
