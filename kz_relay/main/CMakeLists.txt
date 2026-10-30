@@ -2,6 +2,10 @@ idf_component_register(SRCS "kz_relay.c" "protocol.c" "journal.c" "command_engin
     INCLUDE_DIRS "."
     REQUIRES esp_driver_gpio esp_wifi esp_netif esp_event nvs_flash esp_timer mqtt)
 
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    KZ_BOARD_${KZ_BOARD}=1 KZ_RELAY_GPIO=${KZ_RELAY_GPIO}
+    KZ_RELAY_ACTIVE_HIGH=${KZ_RELAY_ACTIVE_HIGH})
+
 if(EXISTS "${PROJECT_DIR}/local/device_config.h" AND EXISTS "${PROJECT_DIR}/local/broker_ca.pem")
     target_include_directories(${COMPONENT_LIB} PRIVATE "${PROJECT_DIR}/local")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE KZ_LOCAL_CONFIG=1)

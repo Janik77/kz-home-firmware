@@ -1,4 +1,5 @@
 #pragma once
+#include "board.h"
 #ifdef KZ_LOCAL_CONFIG
 #include "device_config.h"
 extern const char kz_broker_ca_start[] asm("_binary_kz_broker_ca_start");
@@ -15,5 +16,4 @@ extern const char kz_broker_ca_start[] asm("_binary_kz_broker_ca_start");
 #define KZ_TIME_SERVER ""
 static const char kz_broker_ca_start[] = "";
 #endif
-#define KZ_FIRMWARE_VERSION "0.9.0"
-#define KZ_HARDWARE_MODEL "kz-relay-esp32c6"
+#define KZ_FIRMWARE_VERSION "0.10.0"

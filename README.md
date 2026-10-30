@@ -1,7 +1,17 @@
-# KZ Home Relay v0.9
+# KZ Home Relay v0.10.0
 
-Прошивка одного реле: ESP32-C6, ESP-IDF **6.0.x** (сборка проверена с 6.0.3),
-ESP-MQTT **1.1.0**, GPIO **2**, активный HIGH. LOW означает OFF.
+Прошивка одного реле: classic ESP32-WROOM-32 (основная плата) и ESP32-C6,
+ESP-IDF **6.0.x**, ESP-MQTT **1.1.0**. Один общий исходный код, отдельные бинарники.
+USB-C/CH340C не означает ESP32-C6: для имеющейся платы нужен target `esp32`.
+
+| KZ_BOARD | IDF target | Hardware metadata | GPIO по умолчанию |
+|---|---|---|---|
+| `esp32_wroom` (по умолчанию) | `esp32` | `kz-relay-esp32-wroom` | **26, предварительно** |
+| `esp32c6` | `esp32c6` | `kz-relay-esp32c6` | 2, сохранён из v0.9 |
+
+Оба профиля по умолчанию active-high. `KZ_RELAY_ACTIVE_HIGH=0` выбирает active-low.
+GPIO26 — только кандидат: до подключения проверить разводку конкретной платы.
+Размер flash, ревизия платы и электрическое поведение **не проверены**.
 Автоматического переключения нет. Matter/Zigbee/Thread/BLE, OTA и provisioning
 не реализованы. Нормативный wire-контракт: соседний
 [`kz-home-core/DEVICE_PROTOCOL.md`](../kz-home-core/DEVICE_PROTOCOL.md), v1.
@@ -28,7 +38,7 @@ ESP-MQTT **1.1.0**, GPIO **2**, активный HIGH. LOW означает OFF.
 
 `device_id` стабилен, client ID равен `kz-{device_id}`. Пароли можно менять
 пересборкой/прошивкой без смены identity и стирания журнала. GPIO и полярность
-зафиксированы в `main/relay.c`; модель — `kz-relay-esp32c6`, firmware — `0.9.0`.
+задаются CMake-параметрами профиля; firmware — `0.10.0`.
 
 `local/`, локальные sdkconfig, build, managed components, `.env` и типичные
 сертификаты/ключи игнорируются Git. Шаблон содержит только пустые значения.
@@ -48,35 +58,54 @@ flash может раскрыть credentials. Будущее provisioning до�
 
 Активируйте ESP-IDF 6.0.x в терминале через его штатный export/activation script.
 Первой сборке нужен доступ к Espressif Component Registry для MQTT; версия и
-хеш закреплены в `dependencies.lock`. MQTT вынесен из IDF 6 в managed component
+хеш закреплены в `dependencies.lock.esp32` / `dependencies.lock.esp32c6`.
+Старый `dependencies.lock` оставлен как snapshot v0.9 и не используется.
+MQTT вынесен из IDF 6 в managed component
 ([Espressif](https://github.com/espressif/esp-idf/blob/master/docs/en/api-reference/protocols/mqtt.rst)).
 
-PowerShell, из корня firmware:
+PowerShell, из корня firmware (только сборка; hardware пока не прошивать):
 
 ```powershell
+# На этой машине установленный activation script:
+. C:/Espressif/tools/Microsoft.v6.0.3.PowerShell_profile.ps1
 cd kz_relay
-$kzSdkconfig = Join-Path (Get-Location) 'sdkconfig.local'
-idf.py -B build -D "SDKCONFIG=$kzSdkconfig" set-target esp32c6
-idf.py -B build -D "SDKCONFIG=$kzSdkconfig" build
-idf.py -B build -D "SDKCONFIG=$kzSdkconfig" -p COM3 flash monitor
-# Отдельное подключение монитора:
-idf.py -B build -D "SDKCONFIG=$kzSdkconfig" -p COM3 monitor
+idf.py -B build/esp32_wroom-v010 -D KZ_BOARD=esp32_wroom build
+idf.py -B build/esp32c6-v010 -D KZ_BOARD=esp32c6 build
+# Пример отдельного active-low build после проверки схемы и GPIO:
+idf.py -B build/esp32_wroom-low -D KZ_BOARD=esp32_wroom -D KZ_RELAY_GPIO=26 -D KZ_RELAY_ACTIVE_HIGH=0 build
 ```
 
 Linux/macOS, из `kz_relay`:
 
 ```sh
-idf.py -B build -D SDKCONFIG="$PWD/sdkconfig.local" set-target esp32c6
-idf.py -B build -D SDKCONFIG="$PWD/sdkconfig.local" build
-idf.py -B build -D SDKCONFIG="$PWD/sdkconfig.local" -p /dev/ttyUSB0 flash monitor
+idf.py -B build/esp32_wroom-v010 -D KZ_BOARD=esp32_wroom build
+idf.py -B build/esp32c6-v010 -D KZ_BOARD=esp32c6 build
 ```
 
-Замените порт своим. Выход из monitor: Ctrl+]. `set-target` нужен при первоначальной
-подготовке/смене target; повторять его перед каждой сборкой не требуется.
-После добавления/удаления локального header/CA выполните `idf.py reconfigure`,
-затем `build` с тем же SDKCONFIG. CMake по умолчанию также выбирает `sdkconfig.local`.
-Отслеживаемый `sdkconfig` оставлен как старый snapshot демо и для новой сборки
-не используется; основа — `sdkconfig.defaults`.
+`set-target`, `fullclean` и `erase-flash` для выбора профиля не нужны.
+Не используйте один build-каталог для разных плат: CMake отклоняет смену платы
+или несовпадающий target (в том числе `IDF_TARGET` из environment).
+Каждый build хранит свой `sdkconfig` внутри build-каталога. Старые корневые
+`sdkconfig`/`sdkconfig.local` не используются. Defaults: общий файл плюс
+`boards/sdkconfig.defaults.<target>`. Managed MQTT общий, версия одинакова;
+lock-файлы разделены по target. Сборки разных target запускайте последовательно.
+После добавления/удаления local header/CA выполните `reconfigure`, затем `build`
+с теми же `-B` и `-D KZ_BOARD`.
+
+Будущая процедура flash **после отдельного разрешения и проверки оборудования**:
+
+```powershell
+# COM3 — пример; проверить выбранный порт и target, отключить реле/нагрузку.
+idf.py -B build/esp32_wroom-v010 -D KZ_BOARD=esp32_wroom -p COM3 flash monitor
+# Для C6 использовать ТОЛЬКО build/esp32c6-v010 и KZ_BOARD=esp32c6.
+```
+
+Linux/macOS: та же команда с реальным портом вместо COM3, например `/dev/ttyUSB0`.
+Выход из monitor: Ctrl+]. В v0.10.0 hardware flash/acceptance не выполнялись.
+
+Classic build использует DIO/40 MHz и 2 MiB как консервативные **build assumptions**,
+не как измеренные параметры платы. До flash проверить размер/тип flash и layout.
+Увеличение flash не добавляет OTA автоматически.
 
 `partitions.csv` рассчитан на flash не менее 2 MiB: приложение 0x170000 байт,
 отдельный NVS-раздел `commands` 0x20000 байт с адреса 0x180000.
@@ -87,7 +116,34 @@ flash. При ошибке NVS прошивка ничего автоматич�
 
 ## Архитектура и запуск
 
-- `relay.c`: только GPIO 2 и текущее логическое состояние выхода.
+### Электрическая безопасность и board configuration
+
+`KZ_RELAY_GPIO` и `KZ_RELAY_ACTIVE_HIGH` — build-time параметры, не credentials.
+`main/board.h` отклоняет несовпадающие board/target и пины вне консервативного
+allowlist. Для classic ESP32 разрешены 18, 19, 21–23, 25–27, 32–33;
+GPIO2 не используется и не разрешён для реле. Strapping 0/2/5/12/15, flash 6–11,
+UART 1/3, непроверенные memory pins 16/17 и input-only 34–39 исключены.
+Для C6 сохранён GPIO2; чужую разводку на classic ESP32 переносить нельзя.
+
+Приложение сначала записывает inactive level и только затем включает output:
+active-high OFF=LOW, active-low OFF=HIGH. До успешной инициализации команды GPIO
+запрещены; ошибка записи не меняет cached logical state. После reset ON не
+восстанавливается из журнала. При потере сети последнее состояние сохраняется.
+
+**Software OFF не гарантирует электрический OFF во время boot-ROM/reset,
+brownout или до запуска приложения.** Нужна проверенная внешняя схема:
+pull-down для active-high / pull-up для active-low, с учётом реального входа и
+порядка питания relay module. Не подавать 5 V на GPIO и не питать катушку от GPIO.
+Тип, pinout, токи, logic thresholds и наличие драйвера у реле пока неизвестны.
+
+Первый физический тест: USB data cable, LED с последовательным резистором
+примерно 1 kΩ или logic probe, мультиметр; oscilloscope/logic analyzer для
+коротких импульсов boot/reset. Реле подключать только после проверки интерфейса,
+с подходящим питанием/драйвером и низковольтной тестовой нагрузкой. Сеть 230 V
+для первоначальных тестов не использовать. Сборка не является hardware acceptance.
+
+- `boards/select.cmake`, `main/board.h`: target, metadata, GPIO и полярность.
+- `relay.c`: выбранный GPIO и текущее логическое состояние выхода.
 - `protocol.c`: bounded JSON/UTF-8 parser, timestamp, freshness, сравнение
   команд, правила освобождения записей; не зависит от ESP-IDF.
 - `command_engine.c`: проверки и порядок NVS → GPIO → NVS; сеть отделена.
@@ -96,7 +152,7 @@ flash. При ошибке NVS прошивка ничего автоматич�
 - `device_mqtt.c`: TLS MQTT, SUBACK, сборка фрагментов, worker, ACK/state/status.
 - `kz_relay.c`: безопасная инициализация и запуск модулей.
 
-Последовательность: GPIO LOW/OFF → проверка local config → NVS и восстановление
+Последовательность: GPIO inactive / logical OFF → проверка local config → NVS и восстановление
 журнала → Wi-Fi/IP → синхронизация UTC → MQTT TLS с настроенным offline LWT →
 подписка на собственный `/set` → успешный SUBACK QoS 1 → retained текущее state →
 retained online. Без времени TLS/MQTT и обработка команд не стартуют. Ожидание
@@ -145,7 +201,7 @@ GPIO API, **не измеренную обратную связь контакт
 LWT устанавливается **до CONNECT**: `{"status":"offline"}`, QoS 1, retained.
 Online содержит `status:"online"`, UTC `timestamp`, `last_seen`,
 `heartbeat_interval_seconds:60` и optional metadata `protocol_version:"v1"`,
-`firmware_version:"0.9.0"`, `hardware_model:"kz-relay-esp32c6"`.
+`firmware_version:"0.10.0"`, `hardware_model` выбранного профиля.
 Online повторяется каждые 60 секунд; state не рассылается периодически без причины.
 При потере питания/связи broker публикует LWT после обнаружения разрыва;
 keepalive 30 секунд. Это не обещание мгновенного offline.
@@ -218,7 +274,7 @@ UTC не может быть раньше последней durable обраб�
 При потере Wi-Fi/MQTT реле **сохраняет последний уровень**, включая ON.
 Таймер отключения нагрузки не реализован. При reset уровень устанавливается OFF,
 восстановления ON из flash нет. Для безопасного уровня **до исполнения app_main**
-нужна корректная внешняя схема/pull-down; boot-ROM и электрические переходные
+нужна корректная внешняя схема/bias по полярности; boot-ROM и электрические переходные
 процессы требуют измерения на реальной плате.
 
 TLS использует только предоставленный CA и проверяет цепочку, срок действия и
@@ -246,7 +302,7 @@ ON/OFF schema, Unicode/escaping, malformed/duplicate keys, nesting/size,
 Дополнительно выполняются 20 000 детерминированных malformed-input проб.
 Это не проверка физической flash/NVS при отключении питания.
 
-Результат проверки текущего v0.9 (2026-10-01): **20 242 assertions прошли** с
+Историческая проверка v0.9 (2026-10-01): **20 242 assertions прошли** с
 Zig 0.14.1 `cc` (`-Wall -Wextra -Werror`), также прошёл запуск с
 `-fsanitize=undefined -fno-sanitize-recover=all`. GCC 15.2.0 `-fanalyzer`
 проверил все 7 production C-модулей без диагностик. ESP-IDF 6.0.3 успешно
@@ -258,10 +314,12 @@ Wi-Fi, TLS handshake и live MQTT/Core E2E **не запускались**.
 
 ## Checklist первого hardware E2E
 
-1. Проверить плату ESP32-C6, flash ≥2 MiB, GPIO 2, активный HIGH и безопасную
-   нагрузку. Измерить OFF при boot/reset; подготовить возможность отключения питания.
-2. В Core зарегистрировать house/device и доверенную relay capability `on:boolean`
-   (writable), привязанные к правильному дому. Использовать стабильный device ID.
+1. Проверить фактическую плату, flash ≥2 MiB, выбранный GPIO, полярность и безопасную
+   нагрузку. Для classic GPIO26 предварителен. Измерить OFF при boot/reset;
+   подготовить возможность отключения питания.
+2. После отдельного Core follow-up зарегистрировать house/device с доверенной
+   capability `on_off` (wire state `on:boolean`), привязанными к правильному дому.
+   Использовать стабильный device ID; не выдавать classic ESP32 за C6.
 3. Оператору развертывания предоставить физической плате приватный сетевой путь
    к Mosquitto TLS: текущий documented Compose держит брокер только во внутренней
    Docker-сети без опубликованного host-порта. Не открывать plaintext MQTT/anonymous.
@@ -292,8 +350,50 @@ Wi-Fi, TLS handshake и live MQTT/Core E2E **не запускались**.
     600s. Для этих тестов требуется реальное оборудование.
 
 По DEVICE_PROTOCOL §19 текущий Core ещё не реализует command retries, heartbeat
-expiry, полноценное отслеживание pending ACK и freshness retained state.
-Firmware не утверждает, что эти серверные гарантии уже существуют, и не меняет Core.
+expiry и freshness retained state. v0.20 уже содержит отдельный command lifecycle
+с 30s deadline и требованием matching ACK + live correlated state. Firmware
+не утверждает, что остальные серверные гарантии существуют, и не меняет Core.
+
+## Отдельные follow-up задачи (вне v0.10.0)
+
+- **Core onboarding:** добавить проверенный classic ESP32 profile. Сейчас Core
+  разрешает только `esp32-c6-relay-v1`; metadata firmware не обходит этот gate.
+- **LWT compatibility:** firmware отправляет `{"status":"offline"}`, а текущая
+  Core `StatusEnvelope` требует `last_seen`. Offline может быть отвергнут;
+  это известный незакрытый блокер network E2E. Wire behavior здесь не изменён.
+- **Protocol/Core policy:** отдельно рассмотреть ID character policy, firmware
+  300s freshness против Core 30s deadline, delivery/retries и heartbeat expiry.
+- **Provisioning/security:** protected credential storage, rotation/revocation,
+  secure boot/flash encryption и recovery после отдельного проектирования.
+- **OTA:** signed updates и layout после проверки flash; текущий factory layout
+  без OTA slots сохраняется вместе с журналом.
+- **Radios/Web:** BLE Mesh, Matter, Thread и изменения Web — отдельные задачи.
+
+## Проверка v0.10.0
+
+Проверено 2026-10-30 на ESP-IDF **6.0.3**, GCC **15.2.0**, CMake **4.0.3**,
+Ninja **1.12.1**, host compiler Zig **0.14.1 cc**:
+
+| Проверка | Результат |
+|---|---|
+| Новый `build/esp32_wroom-v010`, target esp32 | ELF/BIN + bootloader + partition table; app `0xe0a10`, 39% свободно |
+| Новый `build/esp32c6-v010`, target esp32c6 | ELF/BIN + bootloader + partition table; app `0x106a60`, 29% свободно |
+| Protocol/freshness/journal/engine | 20 242 checks PASS |
+| GPIO/polarity/fault matrix | 8 executable variants PASS |
+| Unsafe compile configurations | 31 отклонены ожидаемыми guards |
+| CMake selection/isolation | 3 valid и 7 invalid/environment cases PASS |
+
+Обе IDF сборки без local header/CA: сеть выключена. Metadata и compiler flags
+соответствуют выбранным board/target/GPIO. IDF вывел некритичные Kconfig notices
+BT/FATFS. Hardware, flash, live Wi-Fi/TLS/MQTT/Core/Web E2E не проверялись.
+
+Host runner `tests/run_host_tests.py` использует настоящий parser/journal/engine
+и настоящий `relay.c` с recording GPIO stub. Он проверяет оба профиля, обе
+полярности, default/override GPIO, OFF-before-output, ошибки GPIO и запрет apply
+после ошибки init. Негативные compile/CMake проверки отклоняют опасные GPIO,
+неизвестные профили, target mismatch, shared build и невалидные параметры.
+Передавайте `--cmake <path>` и `--cc <compiler> [cc]`, если инструменты не в PATH.
+Эти тесты не моделируют физическую relay module или reset electrical waveform.
 
 Точный ACL для нового физического principal (заменить PLACEHOLDER-значения
 согласованно с Core и local header; добавляет оператор, не эта прошивка):

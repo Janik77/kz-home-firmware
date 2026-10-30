@@ -1,11 +1,6 @@
-# The following five lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.22)
-
-# Keep generated/local configuration out of the tracked legacy demo sdkconfig.
-if(NOT DEFINED SDKCONFIG)
-    set(SDKCONFIG "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.local")
-endif()
-set(PROJECT_VER "0.9.0")
+include("${CMAKE_CURRENT_LIST_DIR}/boards/select.cmake")
+set(PROJECT_VER "0.10.0")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+idf_build_set_property(DEPENDENCIES_LOCK "${CMAKE_CURRENT_LIST_DIR}/dependencies.lock.${IDF_TARGET}")
 project(kz_relay)
