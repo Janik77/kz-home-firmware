@@ -184,6 +184,13 @@ static void engine_tests(void)
 int main(void)
 {
     parser_tests(); time_tests(); engine_tests();
+    /* Document the existing safety gap without silently changing its policy:
+     * Core's 30s lifecycle can expire while this first-delivery ON is valid. */
+    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
+    kz_command late = with_state("{\"on\":true}");
+    kz_result result = kz_process(&late, late.timestamp_ms + 60000, false);
+    CHECK(result.ack && result.ack->outcome == KZ_APPLIED);
+    CHECK(relay_state() && fake_apply_count == 1);
     printf("PASS: %d checks (parser, freshness, durable journal/engine, fault injection)\n", checks);
     return 0;
 }
