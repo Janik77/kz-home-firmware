@@ -5,3 +5,4 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_STATE 1
 #define ESP_ERR_NVS_NOT_FOUND 2
 #define ESP_ERR_INVALID_ARG 3
+#define ESP_ERR_NO_MEM 4

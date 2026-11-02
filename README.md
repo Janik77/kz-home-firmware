@@ -1,4 +1,4 @@
-# KZ Home Relay v0.10.0
+# KZ Home Relay v0.11.0
 
 Прошивка одного реле: classic ESP32-WROOM-32 (основная плата) и ESP32-C6,
 ESP-IDF **6.0.x**, ESP-MQTT **1.1.0**. Один общий исходный код, отдельные бинарники.
@@ -38,7 +38,7 @@ GPIO26 — только кандидат: до подключения прове
 
 `device_id` стабилен, client ID равен `kz-{device_id}`. Пароли можно менять
 пересборкой/прошивкой без смены identity и стирания журнала. GPIO и полярность
-задаются CMake-параметрами профиля; firmware — `0.10.0`.
+задаются CMake-параметрами профиля; firmware — `0.11.0`.
 
 `local/`, локальные sdkconfig, build, managed components, `.env` и типичные
 сертификаты/ключи игнорируются Git. Шаблон содержит только пустые значения.
@@ -69,8 +69,8 @@ PowerShell, из корня firmware (только сборка; hardware пок
 # На этой машине установленный activation script:
 . C:/Espressif/tools/Microsoft.v6.0.3.PowerShell_profile.ps1
 cd kz_relay
-idf.py -B build/esp32_wroom-v010 -D KZ_BOARD=esp32_wroom build
-idf.py -B build/esp32c6-v010 -D KZ_BOARD=esp32c6 build
+idf.py -B build/esp32_wroom-v011 -D KZ_BOARD=esp32_wroom build
+idf.py -B build/esp32c6-v011 -D KZ_BOARD=esp32c6 build
 # Пример отдельного active-low build после проверки схемы и GPIO:
 idf.py -B build/esp32_wroom-low -D KZ_BOARD=esp32_wroom -D KZ_RELAY_GPIO=26 -D KZ_RELAY_ACTIVE_HIGH=0 build
 ```
@@ -78,8 +78,8 @@ idf.py -B build/esp32_wroom-low -D KZ_BOARD=esp32_wroom -D KZ_RELAY_GPIO=26 -D K
 Linux/macOS, из `kz_relay`:
 
 ```sh
-idf.py -B build/esp32_wroom-v010 -D KZ_BOARD=esp32_wroom build
-idf.py -B build/esp32c6-v010 -D KZ_BOARD=esp32c6 build
+idf.py -B build/esp32_wroom-v011 -D KZ_BOARD=esp32_wroom build
+idf.py -B build/esp32c6-v011 -D KZ_BOARD=esp32c6 build
 ```
 
 `set-target`, `fullclean` и `erase-flash` для выбора профиля не нужны.
@@ -96,12 +96,13 @@ lock-файлы разделены по target. Сборки разных target
 
 ```powershell
 # COM3 — пример; проверить выбранный порт и target, отключить реле/нагрузку.
-idf.py -B build/esp32_wroom-v010 -D KZ_BOARD=esp32_wroom -p COM3 flash monitor
-# Для C6 использовать ТОЛЬКО build/esp32c6-v010 и KZ_BOARD=esp32c6.
+idf.py -B build/esp32_wroom-v011 -D KZ_BOARD=esp32_wroom -p COM3 flash monitor
+# Для C6 использовать ТОЛЬКО build/esp32c6-v011 и KZ_BOARD=esp32c6.
 ```
 
 Linux/macOS: та же команда с реальным портом вместо COM3, например `/dev/ttyUSB0`.
-Выход из monitor: Ctrl+]. В v0.10.0 hardware flash/acceptance не выполнялись.
+Выход из monitor: Ctrl+]. В v0.11.0 hardware flash/acceptance не выполнялись.
+Старые build-каталоги/artifacts v0.10.0 и private configuration сохраняются.
 
 Classic build использует DIO/40 MHz и 2 MiB как консервативные **build assumptions**,
 не как измеренные параметры платы. До flash проверить размер/тип flash и layout.
@@ -198,10 +199,17 @@ GPIO API, **не измеренную обратную связь контакт
 `failed` / `hardware_failure`. Boot/reconnect state сообщает фактическое текущее
 логическое состояние и может не иметь correlation ID.
 
-LWT устанавливается **до CONNECT**: `{"status":"offline"}`, QoS 1, retained.
+LWT устанавливается **до CONNECT**: `{"status":"offline","last_seen":"<valid device UTC>","protocol_version":"v1"}`,
+QoS 1, retained. `last_seen` берётся при запуске клиента: это историческая device
+observation, **не время disconnect и не broker receipt time**. При auto-reconnect
+этот LWT остаётся прежним. Без валидного UTC клиент не создаётся.
+При clock fault offline использует последнее валидное время; optional `timestamp`
+не добавляется. Перед clean stop/restart firmware пытается отправить такой offline.
+Успех SDK publish не гарантирует PUBACK/доставку Core. Подробности и ограничения:
+[аудит v0.11.0](docs/MQTT_COMPAT_V0.11.0.md).
 Online содержит `status:"online"`, UTC `timestamp`, `last_seen`,
 `heartbeat_interval_seconds:60` и optional metadata `protocol_version:"v1"`,
-`firmware_version:"0.10.0"`, `hardware_model` выбранного профиля.
+`firmware_version:"0.11.0"`, `hardware_model` выбранного профиля.
 Online повторяется каждые 60 секунд; state не рассылается периодически без причины.
 При потере питания/связи broker публикует LWT после обнаружения разрыва;
 keepalive 30 секунд. Это не обещание мгновенного offline.
@@ -229,6 +237,15 @@ JSON или отсутствующие/невалидные IDs отбрасыв
 - Core может повторять intent в пределах 300 секунд с **тем же command_id**.
 - Журнал сохраняет ID, correlation ID, исходный timestamp, desired on,
   время первой обработки и результат минимум **600 секунд** от первой обработки.
+
+**Это не Core execution deadline.** Core завершает command lifecycle по 30s
+deadline от создания записи, но не передаёт этот deadline в `/set`. Валидная
+команда может впервые прийти на +60s и переключить GPIO после Core `timed_out`.
+В v0.11.0 freshness/dedup и lifecycle semantics не меняются. Замена 300 на 30
+не устраняет skew/dispatch/NVS latency и не гарантирует запрет позднего действия.
+`timed_out` не означает cancellation/OFF. Перед deployment с требованием запрета
+late actuation нужна отдельная согласованная задача Core + firmware; см.
+[разбор и acceptance criteria](docs/MQTT_COMPAT_V0.11.0.md).
 
 Журнал содержит 128 записей. Перед GPIO сначала коммитится `pending`; после GPIO
 коммитится `applied`/`failed`; только после этого результат доступен для ACK.
@@ -317,7 +334,7 @@ Wi-Fi, TLS handshake и live MQTT/Core E2E **не запускались**.
 1. Проверить фактическую плату, flash ≥2 MiB, выбранный GPIO, полярность и безопасную
    нагрузку. Для classic GPIO26 предварителен. Измерить OFF при boot/reset;
    подготовить возможность отключения питания.
-2. После отдельного Core follow-up зарегистрировать house/device с доверенной
+2. В Core v0.21 зарегистрировать house/device с доверенной
    capability `on_off` (wire state `on:boolean`), привязанными к правильному дому.
    Использовать стабильный device ID; не выдавать classic ESP32 за C6.
 3. Оператору развертывания предоставить физической плате приватный сетевой путь
@@ -354,13 +371,14 @@ expiry и freshness retained state. v0.20 уже содержит отдельн
 с 30s deadline и требованием matching ACK + live correlated state. Firmware
 не утверждает, что остальные серверные гарантии существуют, и не меняет Core.
 
-## Отдельные follow-up задачи (вне v0.10.0)
+## Отдельные follow-up задачи (вне v0.11.0)
 
-- **Core onboarding:** добавить проверенный classic ESP32 profile. Сейчас Core
-  разрешает только `esp32-c6-relay-v1`; metadata firmware не обходит этот gate.
-- **LWT compatibility:** firmware отправляет `{"status":"offline"}`, а текущая
-  Core `StatusEnvelope` требует `last_seen`. Offline может быть отвергнут;
-  это известный незакрытый блокер network E2E. Wire behavior здесь не изменён.
+- **Закрыто отдельно:** Core v0.21 (`6464bd8`) добавил `esp32-relay-v1` наряду с
+  `esp32-c6-relay-v1`. Нужны approved identity, house binding и activation;
+  metadata firmware не обходит admission gate.
+- **Закрыто в v0.11.0:** LWT/offline содержит обязательный `last_seen` и проходит
+  существующую Core schema. Историческое время, stale retained availability и
+  отсутствие heartbeat expiry не превращаются в receipt-time guarantees.
 - **Protocol/Core policy:** отдельно рассмотреть ID character policy, firmware
   300s freshness против Core 30s deadline, delivery/retries и heartbeat expiry.
 - **Provisioning/security:** protected credential storage, rotation/revocation,
@@ -369,7 +387,17 @@ expiry и freshness retained state. v0.20 уже содержит отдельн
   без OTA slots сохраняется вместе с журналом.
 - **Radios/Web:** BLE Mesh, Matter, Thread и изменения Web — отдельные задачи.
 
-## Проверка v0.10.0
+## Проверка v0.11.0
+
+20 245 protocol/command/journal checks, board/polarity matrix и MQTT worker tests
+для обеих плат. Захваченные payloads проходят **реальные** Core schema/gateway,
+включая live/retained status и malformed input. Core читается без DB/network и
+без записи bytecode. Независимые IDF 6.0.3 builds PASS: ESP32 `0xe0b10` (39% free),
+C6 `0x106b70` (29% free), без local config/CA и без hardware acceptance.
+Команда запуска, deadline counterexample и ограничения:
+[MQTT_COMPAT_V0.11.0.md](docs/MQTT_COMPAT_V0.11.0.md).
+
+## История: проверка v0.10.0
 
 Проверено 2026-10-30 на ESP-IDF **6.0.3**, GCC **15.2.0**, CMake **4.0.3**,
 Ninja **1.12.1**, host compiler Zig **0.14.1 cc**:

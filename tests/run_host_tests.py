@@ -8,11 +8,14 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument("--cc", nargs="+", default=["cc"])
 parser.add_argument("--cmake", default="cmake")
+parser.add_argument("--core-root", type=Path, help="Read-only Core checkout for actual schema/gateway tests")
+parser.add_argument("--core-site-packages", type=Path, help="Existing compatible Core dependencies (no install)")
 args = parser.parse_args()
 build = ROOT / "build" / "host-tests"
 build.mkdir(parents=True, exist_ok=True)
@@ -92,3 +95,26 @@ result = subprocess.run([args.cmake, "-P", str(build / "select_esp32_wroom.cmake
     env={**cmake_env, "IDF_TARGET": "esp32c6"}, capture_output=True, text=True)
 assert result.returncode != 0 and "environment IDF_TARGET disagree" in result.stderr, result.stderr
 print("PASS: CMake board selection, target/build isolation and configuration validation")
+
+# The real MQTT worker/callbacks, parser, journal and command engine; only SDK
+# boundaries are fake. No broker, sockets, private files or production credentials.
+for board, target in boards:
+    output = build / f"mqtt_{board}{exe.suffix}"
+    # config.h's embedded CA symbol uses the same GNU asm extension as ESP-IDF.
+    subprocess.run(common + ["-std=gnu11", "-Itests/mqtt_stubs", "-DKZ_LOCAL_CONFIG=1",
+        "-DCONFIG_MBEDTLS_HAVE_TIME_DATE=1", f"-DKZ_BOARD_{board}=1",
+        f"-DCONFIG_IDF_TARGET_{target}=1", "tests/test_mqtt.c", *sources[:3],
+        "tests/fake_platform.c", "-o", str(output)], cwd=ROOT, check=True)
+    result = subprocess.run([str(output)], capture_output=True, text=True, check=True)
+    messages = build / f"mqtt_{board}.jsonl"
+    messages.write_text("\n".join(line.split("\t", 1)[1]
+        for line in result.stdout.splitlines() if "\t" in line) + "\n", encoding="utf-8")
+    print(result.stdout.splitlines()[-1])
+    if args.core_root:
+        command = [sys.executable, "-B", str(ROOT / "tests/test_core_compat.py"),
+            "--core-root", str(args.core_root), "--messages", str(messages)]
+        if args.core_site_packages:
+            command += ["--site-packages", str(args.core_site_packages)]
+        subprocess.run(command, check=True)
+    else:
+        print("SKIP: actual Core compatibility (supply --core-root and installed dependencies)")

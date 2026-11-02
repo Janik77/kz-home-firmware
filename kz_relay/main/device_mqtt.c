@@ -26,6 +26,9 @@
 static const char *TAG = "kz_mqtt";
 static esp_mqtt_client_handle_t client;
 static char set_topic[288], state_topic[288], ack_topic[288], status_topic[288], client_id[140];
+/* Worker-owned after startup. The LWT is an immutable startup-time hint,
+ * never the time at which the broker eventually observes disconnection. */
+static char last_valid_time[25], lwt_payload[128];
 static QueueHandle_t incoming;
 static atomic_bool ready, need_restart;
 static atomic_uint generation;
@@ -74,15 +77,41 @@ static bool ack_report(const kz_record *r)
     return publish(ack_topic, payload, false);
 }
 
+static bool remember_time(void)
+{
+    char stamp[25] = {0}; int64_t ms;
+    if (!network_timestamp(stamp) || !kz_timestamp(stamp, &ms)) return false;
+    memcpy(last_valid_time, stamp, sizeof(last_valid_time));
+    return true;
+}
+
+static bool offline_payload(char out[128])
+{
+    if (!last_valid_time[0]) return false;
+    int n = snprintf(out, 128, "{\"status\":\"offline\",\"last_seen\":\"%s\",\"protocol_version\":\"v1\"}",
+                     last_valid_time);
+    return n > 0 && n < 128;
+}
+
+static bool offline_report(void)
+{
+    char payload[128];
+    /* If the clock is invalid, retain the last trustworthy observation. Omit
+     * timestamp rather than invent a clock-fault/disconnect event time. */
+    remember_time();
+    if (!offline_payload(payload)) return false;
+    return esp_mqtt_client_publish(client, status_topic, payload, 0, 1, true) >= 0;
+}
+
 static bool online_report(void)
 {
-    char stamp[25], payload[300];
-    if (!network_timestamp(stamp)) return false;
-    snprintf(payload, sizeof(payload), "{\"timestamp\":\"%s\",\"status\":\"online\","
+    char payload[300];
+    if (!remember_time()) return false;
+    int n = snprintf(payload, sizeof(payload), "{\"timestamp\":\"%s\",\"status\":\"online\","
         "\"last_seen\":\"%s\",\"heartbeat_interval_seconds\":60,\"protocol_version\":\"v1\","
         "\"firmware_version\":\"%s\",\"hardware_model\":\"%s\"}",
-        stamp, stamp, KZ_FIRMWARE_VERSION, KZ_HARDWARE_MODEL);
-    return publish(status_topic, payload, true);
+        last_valid_time, last_valid_time, KZ_FIRMWARE_VERSION, KZ_HARDWARE_MODEL);
+    return n > 0 && (size_t)n < sizeof(payload) && publish(status_topic, payload, true);
 }
 
 static bool drain_reports(void)
@@ -194,11 +223,8 @@ static void worker(void *arg)
             atomic_store(&ready, false);
             /* Exceptional shutdown only: send on the socket before DISCONNECT,
              * preserving TCP ordering. Ordinary publications use enqueue. */
-            int sent = esp_mqtt_client_publish(client, status_topic,
-                "{\"status\":\"offline\"}", 0, 1, true);
-            if (sent >= 0) {
-                esp_mqtt_client_stop(client); clock_stopped = true;
-            }
+            if (offline_report() && esp_mqtt_client_stop(client) == ESP_OK)
+                clock_stopped = true;
             offline_retry = mono + 10000000;
         }
         if (now && !clock_stopped && atomic_load(&ready) && network_has_ip()) {
@@ -217,6 +243,10 @@ static void worker(void *arg)
             atomic_store(&need_restart, true);
         if (now && !clock_stopped && mono >= retry_at && atomic_exchange(&need_restart, false)) {
             /* Handles failed SUBACK/start/subscribe as well as transport errors. */
+            atomic_store(&ready, false);
+            /* A clean DISCONNECT suppresses LWT: send valid offline first.
+             * Best effort on a broken connection; this is not a PUBACK guarantee. */
+            offline_report();
             esp_mqtt_client_stop(client);
             if (esp_mqtt_client_start(client) != ESP_OK) atomic_store(&need_restart, true);
             retry_at = mono + 10000000;
@@ -226,6 +256,8 @@ static void worker(void *arg)
 
 esp_err_t device_mqtt_start(void)
 {
+    /* Fail closed before creating the client if no valid UTC can seed its will. */
+    if (!remember_time() || !offline_payload(lwt_payload)) return ESP_ERR_INVALID_STATE;
     snprintf(set_topic, sizeof(set_topic), "kzhome/v1/%s/%s/set", KZ_HOUSE_ID, KZ_DEVICE_ID);
     snprintf(state_topic, sizeof(state_topic), "kzhome/v1/%s/%s/state", KZ_HOUSE_ID, KZ_DEVICE_ID);
     snprintf(ack_topic, sizeof(ack_topic), "kzhome/v1/%s/%s/ack", KZ_HOUSE_ID, KZ_DEVICE_ID);
@@ -245,7 +277,7 @@ esp_err_t device_mqtt_start(void)
         .session.protocol_ver = MQTT_PROTOCOL_V_3_1_1,
         .session.disable_clean_session = false,
         .session.keepalive = 30,
-        .session.last_will = {.topic = status_topic, .msg = "{\"status\":\"offline\"}", .qos = 1, .retain = true},
+        .session.last_will = {.topic = status_topic, .msg = lwt_payload, .qos = 1, .retain = true},
         .network.disable_auto_reconnect = false,
         .network.reconnect_timeout_ms = 5000,
         .network.timeout_ms = 10000,
