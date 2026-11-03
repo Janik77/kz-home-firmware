@@ -1,6 +1,6 @@
-idf_component_register(SRCS "kz_relay.c" "protocol.c" "journal.c" "command_engine.c" "network.c" "device_mqtt.c" "relay.c"
+idf_component_register(SRCS "kz_relay.c" "protocol.c" "journal.c" "command_engine.c" "control.c" "network.c" "device_mqtt.c" "relay.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_driver_gpio esp_wifi esp_netif esp_event nvs_flash esp_timer mqtt)
+    REQUIRES esp_driver_gpio esp_wifi esp_netif esp_event nvs_flash esp_timer mqtt mbedtls esp_hw_support)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     KZ_BOARD_${KZ_BOARD}=1 KZ_RELAY_GPIO=${KZ_RELAY_GPIO}

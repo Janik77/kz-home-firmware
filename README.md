@@ -1,4 +1,19 @@
-# KZ Home Relay v0.11.0
+# KZ Home Relay v0.12.0 — промежуточная реализация
+
+**Physical control закрыт:** production не исполняет ни legacy `/set`, ни новый
+permit до квалификации временных границ и совместной приёмки. Это не готовый
+образ для физического commissioning. Текущий контракт и блокеры:
+[CONTROL_PERMIT_V0.12.md](docs/CONTROL_PERMIT_V0.12.md). Software demo наставника
+и Web не меняются; установленный Core v0.20 обновлять сейчас не требуется.
+
+План будущих испытаний обеих плат, оборудование и границы готовности образов:
+[HARDWARE_VALIDATION_V0.12_RU.md](docs/HARDWARE_VALIDATION_V0.12_RU.md).
+Финальная software-проверка v0.12: 20 361 legacy + 40 205 control checks,
+5 Core pipe scenarios, обе worker/status suites, 8 GPIO variants, 31 compile guards
+и CMake isolation — PASS. Повторные incremental builds ESP-IDF 6.0.3 — PASS:
+ESP32 `0xe1e00`, C6 `0x1080f0`; runtime sources не потребовали пересборки объектов.
+Оба образа без local config/CA, сеть выключена. Для положительных физических
+timing/NVS испытаний отдельный диагностический harness ещё не подготовлен.
 
 Прошивка одного реле: classic ESP32-WROOM-32 (основная плата) и ESP32-C6,
 ESP-IDF **6.0.x**, ESP-MQTT **1.1.0**. Один общий исходный код, отдельные бинарники.
@@ -15,7 +30,7 @@ GPIO26 — только кандидат: до подключения прове
 Автоматического переключения нет. Matter/Zigbee/Thread/BLE, OTA и provisioning
 не реализованы. Нормативный wire-контракт: соседний
 [`kz-home-core/DEVICE_PROTOCOL.md`](../kz-home-core/DEVICE_PROTOCOL.md), v1.
-Значения freshness/dedup ниже — утверждённая policy физического relay v0.9.
+Историческая policy v0.11 описана в docs/MQTT_COMPAT_V0.11.0.md; legacy freshness не разрешает GPIO в v0.12.
 
 ## Локальная конфигурация
 
@@ -38,7 +53,7 @@ GPIO26 — только кандидат: до подключения прове
 
 `device_id` стабилен, client ID равен `kz-{device_id}`. Пароли можно менять
 пересборкой/прошивкой без смены identity и стирания журнала. GPIO и полярность
-задаются CMake-параметрами профиля; firmware — `0.11.0`.
+задаются CMake-параметрами профиля; firmware — `0.12.0`.
 
 `local/`, локальные sdkconfig, build, managed components, `.env` и типичные
 сертификаты/ключи игнорируются Git. Шаблон содержит только пустые значения.
@@ -69,8 +84,8 @@ PowerShell, из корня firmware (только сборка; hardware пок
 # На этой машине установленный activation script:
 . C:/Espressif/tools/Microsoft.v6.0.3.PowerShell_profile.ps1
 cd kz_relay
-idf.py -B build/esp32_wroom-v011 -D KZ_BOARD=esp32_wroom build
-idf.py -B build/esp32c6-v011 -D KZ_BOARD=esp32c6 build
+idf.py -B build/esp32_wroom-v012 -D KZ_BOARD=esp32_wroom build
+idf.py -B build/esp32c6-v012 -D KZ_BOARD=esp32c6 build
 # Пример отдельного active-low build после проверки схемы и GPIO:
 idf.py -B build/esp32_wroom-low -D KZ_BOARD=esp32_wroom -D KZ_RELAY_GPIO=26 -D KZ_RELAY_ACTIVE_HIGH=0 build
 ```
@@ -78,8 +93,8 @@ idf.py -B build/esp32_wroom-low -D KZ_BOARD=esp32_wroom -D KZ_RELAY_GPIO=26 -D K
 Linux/macOS, из `kz_relay`:
 
 ```sh
-idf.py -B build/esp32_wroom-v011 -D KZ_BOARD=esp32_wroom build
-idf.py -B build/esp32c6-v011 -D KZ_BOARD=esp32c6 build
+idf.py -B build/esp32_wroom-v012 -D KZ_BOARD=esp32_wroom build
+idf.py -B build/esp32c6-v012 -D KZ_BOARD=esp32c6 build
 ```
 
 `set-target`, `fullclean` и `erase-flash` для выбора профиля не нужны.
@@ -96,12 +111,12 @@ lock-файлы разделены по target. Сборки разных target
 
 ```powershell
 # COM3 — пример; проверить выбранный порт и target, отключить реле/нагрузку.
-idf.py -B build/esp32_wroom-v011 -D KZ_BOARD=esp32_wroom -p COM3 flash monitor
-# Для C6 использовать ТОЛЬКО build/esp32c6-v011 и KZ_BOARD=esp32c6.
+idf.py -B build/esp32_wroom-v012 -D KZ_BOARD=esp32_wroom -p COM3 flash monitor
+# Для C6 использовать ТОЛЬКО build/esp32c6-v012 и KZ_BOARD=esp32c6.
 ```
 
 Linux/macOS: та же команда с реальным портом вместо COM3, например `/dev/ttyUSB0`.
-Выход из monitor: Ctrl+]. В v0.11.0 hardware flash/acceptance не выполнялись.
+Выход из monitor: Ctrl+]. В v0.12 hardware flash/acceptance не выполнялись.
 Старые build-каталоги/artifacts v0.10.0 и private configuration сохраняются.
 
 Classic build использует DIO/40 MHz и 2 MiB как консервативные **build assumptions**,
@@ -149,13 +164,14 @@ pull-down для active-high / pull-up для active-low, с учётом реа
   команд, правила освобождения записей; не зависит от ESP-IDF.
 - `command_engine.c`: проверки и порядок NVS → GPIO → NVS; сеть отделена.
 - `journal.c`: persistent deduplication в стандартном ESP-IDF NVS.
-- `network.c`: Wi-Fi station, reconnect, SNTP и часы для freshness.
+- `control.c`: raw SHA-256, boot/session/nonce и одноразовое ожидание permit.
+- `network.c`: Wi-Fi station, reconnect, SNTP и часы для TLS/status.
 - `device_mqtt.c`: TLS MQTT, SUBACK, сборка фрагментов, worker, ACK/state/status.
 - `kz_relay.c`: безопасная инициализация и запуск модулей.
 
 Последовательность: GPIO inactive / logical OFF → проверка local config → NVS и восстановление
 журнала → Wi-Fi/IP → синхронизация UTC → MQTT TLS с настроенным offline LWT →
-подписка на собственный `/set` → успешный SUBACK QoS 1 → retained текущее state →
+подписки на собственные `/control/command` и `/control/reply` → оба SUBACK QoS 1 → retained текущее state →
 retained online. Без времени TLS/MQTT и обработка команд не стартуют. Ожидание
 yield-ит FreeRTOS, не препятствуя Wi-Fi reconnect.
 
@@ -163,128 +179,46 @@ Wi-Fi повторяет подключение с задержкой до 32 с
 автоматический reconnect через 5 секунд, clean session и повторную подписку
 при каждом соединении. Неуспешный SUBACK/таймаут подписки не разрешает online;
 worker перезапускает клиент с ограничением частоты. Callback не пишет GPIO/NVS:
-он собирает сообщения в bounded очередь (4 сообщения, каждое до 16 KiB).
+он собирает сообщения в bounded очередь (4 сообщения, каждое до 4096 байт).
 Сообщения из предыдущего соединения отбрасываются. MQTT outbox ограничен 32 KiB.
 
-## Точный MQTT-контракт
+## Точный MQTT-контракт v0.12
 
-Префикс всех топиков: `kzhome/v1/{house_id}/{device_id}`.
+Префикс `kzhome/v1/{house_id}/{device_id}` сохранён. Устройство читает только
+`/control/command`, `/control/reply`, пишет `/control/request`; всё QoS 1, non-retained.
+Существующие `/ack`, `/state`, `/status` сохраняют прежние схемы/QoS/retain.
+Legacy `/set` не подписан и не разрешает GPIO. Старый Core не управляет v0.12.
 
-| Суффикс | Направление | QoS | Retain |
-|---|---|---|---|
-| `/set` | Core → ESP32 | подписка 1 | false |
-| `/ack` | ESP32 → Core | 1 | false |
-| `/state` | ESP32 → Core | 1 | true |
-| `/status` | ESP32 / broker LWT → Core | 1 | true |
+Точная схема command/request/grant/denied, raw-byte SHA-256, исходный сохранённый
+Core deadline, одноразовый nonce, boot/session binding и алгоритм monotonic budget:
+[CONTROL_PERMIT_V0.12.md](docs/CONTROL_PERMIT_V0.12.md). Не использовать ACK/set
+для time-proof. Unknown/duplicate keys, отсутствующий E, неправильные ID/digest,
+retained/чужой topic и grant старой session отвергаются без GPIO.
 
-Telemetry не публикуется. Подписки с wildcard отсутствуют.
+Production budget всегда `qualified=false`: успешные TLS, SNTP, status или permit
+не открывают physical gate. Проверки положительного пути существуют только с
+лабораторными bounds. Последовательность будущего квалифицированного пути:
+проверка budget → durable pending → повторная проверка после NVS → финальная
+проверка около GPIO → durable outcome → прежние ACK/state. До доказательства
+GPIO WCET/rate/suspend/revocation bounds этот путь не допускается в production.
 
-Команда ON (OFF отличается только `on:false`):
+NVS journal v2 сохраняет epoch/digest/E вместе с прежними ID/outcome. Старые v1
+записи обновляются без erase; pending после reset становится failed и никогда
+не исполняется снова. Exact duplicate возвращает исторический ACK и текущее
+state; иной payload с тем же ID отвергается. Full/corrupt NVS и ошибки commit
+закрывают управление. Downgrade reader v0.11 может не принять v2 journal: не
+стирать историю для обхода этой защиты. Разметка flash остаётся прежней.
 
-```json
-{"command_id":"cmd_example","correlation_id":"corr_example","timestamp":"2026-09-30T12:00:00.000Z","state":{"on":true}}
-```
+Reconnect/reboot/clock fault инвалидируют ожидание permit. Deadline ограничивает
+первую запись GPIO по команде, не время нахождения нагрузки во включённом состоянии.
+Исторический `applied` не означает измеренную обратную связь контактов. Поздний
+ACK не отменяет Core `timed_out`; возможен unknown execution.
 
-После успешного исполнения публикуются ACK, затем state:
-
-```json
-{"command_id":"cmd_example","correlation_id":"corr_example","timestamp":"2026-09-30T12:00:00.010Z","status":"applied"}
-{"timestamp":"2026-09-30T12:00:00.011Z","correlation_id":"corr_example","state":{"on":true}}
-```
-
-Оба ID в ACK и correlation ID в причинном state сохраняются без изменения
-значений (JSON escaping может отличаться). `accepted` не нужен для синхронной
-операции GPIO: сразу выдаётся терминальный результат. `applied` означает успех
-GPIO API, **не измеренную обратную связь контактов/нагрузки**. Ошибка GPIO даёт
-`failed` / `hardware_failure`. Boot/reconnect state сообщает фактическое текущее
-логическое состояние и может не иметь correlation ID.
-
-LWT устанавливается **до CONNECT**: `{"status":"offline","last_seen":"<valid device UTC>","protocol_version":"v1"}`,
-QoS 1, retained. `last_seen` берётся при запуске клиента: это историческая device
-observation, **не время disconnect и не broker receipt time**. При auto-reconnect
-этот LWT остаётся прежним. Без валидного UTC клиент не создаётся.
-При clock fault offline использует последнее валидное время; optional `timestamp`
-не добавляется. Перед clean stop/restart firmware пытается отправить такой offline.
-Успех SDK publish не гарантирует PUBACK/доставку Core. Подробности и ограничения:
-[аудит v0.11.0](docs/MQTT_COMPAT_V0.11.0.md).
-Online содержит `status:"online"`, UTC `timestamp`, `last_seen`,
-`heartbeat_interval_seconds:60` и optional metadata `protocol_version:"v1"`,
-`firmware_version:"0.11.0"`, `hardware_model` выбранного профиля.
-Online повторяется каждые 60 секунд; state не рассылается периодически без причины.
-При потере питания/связи broker публикует LWT после обнаружения разрыва;
-keepalive 30 секунд. Это не обещание мгновенного offline.
-
-## Валидация, freshness и durable deduplication
-
-До GPIO проверяются точный topic, полный размер/порядок фрагментов, корректный
-UTF-8/JSON object, отсутствие duplicate JSON keys, ID, UTC timestamp, версия
-(если передана), непустой state и строго boolean `on`.
-Неизвестная capability → `rejected/unsupported_capability`; неправильный
-тип/null → `rejected/invalid_value`; повреждённый envelope, пустой state,
-неверная версия или retained set → `rejected/protocol_error`.
-Unknown optional envelope metadata валидируется и игнорируется.
-
-Ограничения: payload 16 KiB, вложенность 8, ID 128 UTF-8 байт, string 1024 байта,
-не более 64 state fields. Дополнительные product limits: 512 JSON values/keys
-на сообщение, embedded NUL запрещён, duplicate keys запрещены. Некорректный
-JSON или отсутствующие/невалидные IDs отбрасываются без ACK: безопасно скопировать
-оба ID невозможно. Невалидные команды никогда не меняют GPIO.
-
-Утверждённая policy:
-
-- Возраст новой команды **≤300 секунд**. Старше → `rejected/timeout`.
-- Опережение времени **≤30 секунд**. Больше → `rejected/protocol_error`.
-- Core может повторять intent в пределах 300 секунд с **тем же command_id**.
-- Журнал сохраняет ID, correlation ID, исходный timestamp, desired on,
-  время первой обработки и результат минимум **600 секунд** от первой обработки.
-
-**Это не Core execution deadline.** Core завершает command lifecycle по 30s
-deadline от создания записи, но не передаёт этот deadline в `/set`. Валидная
-команда может впервые прийти на +60s и переключить GPIO после Core `timed_out`.
-В v0.11.0 freshness/dedup и lifecycle semantics не меняются. Замена 300 на 30
-не устраняет skew/dispatch/NVS latency и не гарантирует запрет позднего действия.
-`timed_out` не означает cancellation/OFF. Перед deployment с требованием запрета
-late actuation нужна отдельная согласованная задача Core + firmware; см.
-[разбор и acceptance criteria](docs/MQTT_COMPAT_V0.11.0.md).
-
-Журнал содержит 128 записей. Перед GPIO сначала коммитится `pending`; после GPIO
-коммитится `applied`/`failed`; только после этого результат доступен для ACK.
-Валидно идентифицируемые отклонённые команды также коммитятся перед ACK.
-При сбое записи до GPIO действие не выполняется. При сбое записи после GPIO
-выход может уже измениться: ACK об успехе не выдаётся, дальнейшее управление
-блокируется до восстановления storage; текущий state публикуется по возможности.
-
-После reset реле всегда OFF. Сохранённый `pending` превращается в durable
-`failed/hardware_failure`: неизвестно, успел ли GPIO измениться до reset,
-поэтому действие никогда не повторяется. Уже терминальные результаты сохраняются.
-Повтор той же команды возвращает предыдущий ACK и **текущее** state, не вызывает
-GPIO API. Например, исторический `applied` для ON после reset сопровождается
-state OFF. Это не новый успешный запуск старой команды: терминальный ACK не
-регрессирует, просроченная команда не исполняется повторно. Повторное использование
-ID с другим correlation/timestamp/on отбрасывается без изменения результата.
-
-Очистка ленивая, только при необходимости нового слота. Запись заменяется,
-когда прошло ≥600 секунд по UTC **и** по monotonic времени нахождения записи в
-RAM (после reset отсчитывается заново), а исходная команда уже просрочена.
-Поэтому reboot продлевает защиту; запись отклонённой далёкой future-команды
-может занимать слот дольше 600 секунд. При заполнении live-записями или ошибке
-storage новые команды отбрасываются без GPIO и без недолговечного terminal ACK.
-Это backpressure, не фиктивный успех; Core/оператору нужен retry с исходным ID
-до expiry. Автоматического стирания и вытеснения живых записей нет.
-
-Если MQTT outbox заполнен, ACK и причинный state остаются у worker для повторной
-постановки с исходными ID; новые команды до этого не исполняются. Очередь может
-отбрасывать сообщения при перегрузке. QoS 1 не заменяет command-level retry.
-После полного reset пропавший ACK восстанавливается по повтору команды из NVS;
-самостоятельной массовой отправки исторических ACK нет.
-
-Часы: нужен доступный операторский SNTP. До синхронизации команды запрещены;
-после синхронизации используется UTC, привязанный к monotonic clock. Начальный
-UTC не может быть раньше последней durable обработки. Скачок wall clock более
-2 секунд блокирует обработку до reboot; прошивка пытается отправить offline
-перед остановкой MQTT. SNTP сам по себе не аутентифицирует источник времени:
-используйте доверенную сеть/сервер. Прошивка не заменяет это отключением проверки
-сроков сертификата, CA или hostname.
+LWT/offline остаётся историческим наблюдением `last_seen`, без выдуманного времени
+disconnect. Online содержит `timestamp`, `status`, `last_seen`, heartbeat 60 s,
+protocol v1 и firmware `0.12.0`/board metadata. Проверка initial UTC/SNTP нужна
+для TLS/status и не доказывает абсолютные часы ESP32 или право на GPIO.
+История status/LWT: [аудит v0.11.0](docs/MQTT_COMPAT_V0.11.0.md).
 
 ## Поведение при отказах
 
@@ -329,49 +263,23 @@ Zig 0.14.1 `cc` (`-Wall -Wextra -Werror`), также прошёл запуск 
 `git diff --check` прошёл. Hardware, реальная flash/NVS при power-cut,
 Wi-Fi, TLS handshake и live MQTT/Core E2E **не запускались**.
 
-## Checklist первого hardware E2E
+## Следующая совместная приёмка (пока заблокирована)
 
-1. Проверить фактическую плату, flash ≥2 MiB, выбранный GPIO, полярность и безопасную
-   нагрузку. Для classic GPIO26 предварителен. Измерить OFF при boot/reset;
-   подготовить возможность отключения питания.
-2. В Core v0.21 зарегистрировать house/device с доверенной
-   capability `on_off` (wire state `on:boolean`), привязанными к правильному дому.
-   Использовать стабильный device ID; не выдавать classic ESP32 за C6.
-3. Оператору развертывания предоставить физической плате приватный сетевой путь
-   к Mosquitto TLS: текущий documented Compose держит брокер только во внутренней
-   Docker-сети без опубликованного host-порта. Не открывать plaintext MQTT/anonymous.
-   Для варианта с LAN port publication: подключить Mosquitto также к отдельной
-   non-internal bridge-сети для ingress, сохранив существующую internal backend;
-   опубликовать `LAN_BIND_IP:8883:8883` и разрешить firewall-доступ только из
-   device LAN/VLAN. Не публиковать на `0.0.0.0` и не открывать PostgreSQL.
-4. Обеспечить разрешение DNS-имени из Wi-Fi и соответствующий SAN сертификата.
-   Текущая документация Core требует SAN `mosquitto`; LAN hostname/IP нельзя
-   подставить с отключением hostname verification. При необходимости оператор
-   отдельно меняет deployment/certificate; firmware этого не делает.
-5. Создать уникального физического MQTT principal/password и directional ACL:
-   read **только** `kzhome/v1/HOUSE/DEVICE/set`; write **только** собственные
-   `/state`, `/ack`, `/status`. Текущий ACL содержит Core и simulator identities;
-   аккаунт Core и общие пароли использовать нельзя. Не запускать симулятор и
-   физическое реле одновременно с одной identity.
-6. Заполнить локальный header, отдельно предоставить публичный CA, проверить
-   доступность SNTP. Собрать конфигурируемый образ; проверить ignore перед flash.
-7. Flash/monitor: подтвердить IP → UTC → verified TLS → SUBACK → state OFF → online.
-   Неверный CA, hostname и пароль должны препятствовать работе, не включать GPIO.
-8. Через Core выполнить ON/OFF; сопоставить command/correlation IDs, ACK, state,
-   GPIO и запись в PostgreSQL. Проверить автоматизацию через существующий Core flow.
-9. Проверить malformed/unsupported/null, старше 300s и future >30s: без изменения
-   GPIO. Повторить command ID до/после reset: без повторного действия; boot OFF.
-10. Проверить outage/recovery Wi-Fi и broker, resubscribe, 60s heartbeat, LWT,
-    retained state после reconnect и сохранение ON при потере сети. Проверить
-    power-cut до/после NVS commit/GPIO, заполнение журнала и восстановление после
-    600s. Для этих тестов требуется реальное оборудование.
+Сначала review, isolated MQTT/PostgreSQL и квалификация временных границ, затем
+аппаратные тесты на обеих платах. Полный порядок и критерии:
+[CONTROL_PERMIT_V0.12.md §6](docs/CONTROL_PERMIT_V0.12.md#6-блокеры-и-порядок-продолжения).
+До этого не выдавать production permit, не выполнять flash/deploy и не подключать нагрузку.
 
-По DEVICE_PROTOCOL §19 текущий Core ещё не реализует command retries, heartbeat
-expiry и freshness retained state. v0.20 уже содержит отдельный command lifecycle
-с 30s deadline и требованием matching ACK + live correlated state. Firmware
-не утверждает, что остальные серверные гарантии существуют, и не меняет Core.
+Нужны approved Core inventory/claim/house binding/activation (`esp32-relay-v1` или
+`esp32-c6-relay-v1`), отдельная физическая identity, verified TLS/SAN/private LAN
+path, индивидуальный principal с directional control ACL и доступный локальный
+SNTP. Firmware не создаёт credentials/ACL и не открывает host-порт брокера. Не
+использовать simulator identity. Не менять внутреннюю Docker-сеть наставника.
+Проверки CA/hostname/пароля, GPIO/полярности/flash layout и внешнего boot OFF bias
+остаются обязательными. Текущий source не разрешает физическое управление даже
+после ручного заполнения private header.
 
-## Отдельные follow-up задачи (вне v0.11.0)
+## Отдельные follow-up задачи
 
 - **Закрыто отдельно:** Core v0.21 (`6464bd8`) добавил `esp32-relay-v1` наряду с
   `esp32-c6-relay-v1`. Нужны approved identity, house binding и activation;
@@ -379,15 +287,15 @@ expiry и freshness retained state. v0.20 уже содержит отдельн
 - **Закрыто в v0.11.0:** LWT/offline содержит обязательный `last_seen` и проходит
   существующую Core schema. Историческое время, stale retained availability и
   отсутствие heartbeat expiry не превращаются в receipt-time guarantees.
-- **Protocol/Core policy:** отдельно рассмотреть ID character policy, firmware
-  300s freshness против Core 30s deadline, delivery/retries и heartbeat expiry.
+- **Protocol/Core policy:** control adapter v0.12 подготовлен; квалификация bounds и
+  physical acceptance заблокированы. Heartbeat expiry остаётся отдельной задачей.
 - **Provisioning/security:** protected credential storage, rotation/revocation,
   secure boot/flash encryption и recovery после отдельного проектирования.
 - **OTA:** signed updates и layout после проверки flash; текущий factory layout
   без OTA slots сохраняется вместе с журналом.
 - **Radios/Web:** BLE Mesh, Matter, Thread и изменения Web — отдельные задачи.
 
-## Проверка v0.11.0
+## История: проверка v0.11.0
 
 20 245 protocol/command/journal checks, board/polarity matrix и MQTT worker tests
 для обеих плат. Захваченные payloads проходят **реальные** Core schema/gateway,
@@ -423,19 +331,4 @@ Host runner `tests/run_host_tests.py` использует настоящий pa
 Передавайте `--cmake <path>` и `--cc <compiler> [cc]`, если инструменты не в PATH.
 Эти тесты не моделируют физическую relay module или reset electrical waveform.
 
-Точный ACL для нового физического principal (заменить PLACEHOLDER-значения
-согласованно с Core и local header; добавляет оператор, не эта прошивка):
-
-```text
-user PHYSICAL_DEVICE_USERNAME
-topic read kzhome/v1/HOUSE_ID/DEVICE_ID/set
-topic write kzhome/v1/HOUSE_ID/DEVICE_ID/state
-topic write kzhome/v1/HOUSE_ID/DEVICE_ID/ack
-topic write kzhome/v1/HOUSE_ID/DEVICE_ID/status
-```
-
-Пароль добавляется отдельно штатным операторским процессом Mosquitto.
-После изменения port/network/ACL/password inputs оператор пересоздаёт брокер
-по documented deployment workflow (входы копируются в runtime tmpfs на старте).
-Ротация CA также требует обновить доверенный публичный CA на ESP32 и в Core.
-Core wire-протокол менять не требуется.
+Актуальный control ACL и ограничения commissioning: [CONTROL_PERMIT_V0.12.md](docs/CONTROL_PERMIT_V0.12.md).

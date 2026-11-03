@@ -1,6 +1,11 @@
 #include "relay.h"
 #include "board.h"
 #include "driver/gpio.h"
+#ifdef ESP_PLATFORM
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
+#endif
 static bool current_on;
 static bool initialized;
 esp_err_t relay_init(void)
@@ -25,3 +30,20 @@ bool relay_apply(bool on)
     current_on = on; return true;
 }
 bool relay_state(void) { return current_on; }
+bool relay_apply_permitted(bool on, const kz_budget *budget)
+{
+#ifdef ESP_PLATFORM
+    static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    bool applied = false;
+    /* Final check after NVS, serialized with the actual GPIO write. Bounds are
+     * never derived from a network packet. Production policy remains unqualified. */
+    if (!budget->qualified) return false;
+    portENTER_CRITICAL(&mux);
+    if (initialized && kz_budget_valid(budget, esp_timer_get_time())) applied = relay_apply(on);
+    portEXIT_CRITICAL(&mux);
+    return applied;
+#else
+    (void)on; (void)budget;
+    return false; /* Host driver tests do not enable an unqualified actuator. */
+#endif
+}

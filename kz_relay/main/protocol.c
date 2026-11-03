@@ -4,7 +4,7 @@
  * and skipped, never interpreted as physical intent. Stricter product limit:
  * at most 512 values (including object keys) in one command. */
 typedef enum { OBJECT, ARRAY, STRING, BOOL, NUMBER, NIL } kind;
-typedef struct { kind type; char *text; int child, next; bool boolean; } token;
+typedef struct { kind type; char *text; int child, next; bool boolean; size_t size; } token;
 typedef struct {
     char *s; size_t n, p; int count;
     token t[512];
@@ -147,6 +147,8 @@ static int value(parser *p, int depth)
         t->type = NIL; if (!literal(p, "null")) return -1;
     } else {
         t->type = NUMBER;
+        t->text = p->s + p->p;
+        size_t begin_number = p->p;
         if (c == '-') ++p->p;
         if (p->p == p->n || !digit(p->s[p->p])) return -1;
         if (p->s[p->p++] != '0') while (p->p < p->n && digit(p->s[p->p])) ++p->p;
@@ -162,6 +164,7 @@ static int value(parser *p, int depth)
             while (p->p < p->n && digit(p->s[p->p])) ++p->p;
             if (p->p == begin) return -1;
         }
+        t->size = p->p - begin_number;
     }
     t->next = p->count;
     return index;
@@ -257,14 +260,147 @@ bool kz_topic_id(const char *s)
 
 bool kz_reclaimable(const kz_record *r, int64_t now, int64_t resident)
 {
-    return r->version && resident >= KZ_DEDUP_MS && now >= r->first_ms &&
-           now - r->first_ms >= KZ_DEDUP_MS && now - r->timestamp_ms > KZ_AGE_MS;
+    return r->version && r->outcome != KZ_PENDING && resident >= KZ_DEDUP_MS && now >= r->first_ms &&
+           now - r->first_ms >= KZ_DEDUP_MS &&
+           (r->version == 2 || now - r->timestamp_ms > KZ_AGE_MS);
 }
 
 bool kz_same_command(const kz_record *r, const kz_command *c)
 {
-    return equal(r->command_id, c->command_id) && equal(r->correlation_id, c->correlation_id) &&
-           r->timestamp_ms == c->timestamp_ms && r->on == c->on;
+    return c->control && r->expires_us > 0 && equal(r->command_id, c->command_id) &&
+           equal(r->correlation_id, c->correlation_id) && r->on == c->on &&
+           r->created_us == c->created_us && r->expires_us == c->expires_us &&
+           equal(r->epoch, c->epoch) && equal(r->digest, c->digest);
+}
+
+static bool text_is(token *t, const char *s)
+{ return t && t->type == STRING && equal(t->text, s); }
+static bool hex_text(const char *s, size_t n)
+{
+    if (length(s) != n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (!digit(s[i]) && !(s[i] >= 'a' && s[i] <= 'f')) return false;
+    return true;
+}
+static bool uuid_text(token *t)
+{
+    if (!t || t->type != STRING || length(t->text) != 36) return false;
+    for (int i = 0; i < 36; ++i) {
+        char c = t->text[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) { if (c != '-') return false; }
+        else if (!digit(c) && !(c >= 'a' && c <= 'f')) return false;
+    }
+    return true;
+}
+static bool exact(parser *p, const char *const *names, size_t count)
+{
+    size_t found = 0;
+    if (p->t[0].type != OBJECT) return false;
+    for (int k = p->t[0].child; k >= 0 && k < p->t[0].next; k = p->t[p->t[k].next].next) {
+        bool known = false;
+        for (size_t j = 0; j < count; ++j) if (equal(p->t[k].text, names[j])) known = true;
+        if (!known) return false;
+        ++found;
+    }
+    return found == count;
+}
+static bool uint_value(token *t, int64_t max, int64_t *out)
+{
+    if (!t || t->type != NUMBER || !t->size) return false;
+    int64_t n = 0;
+    for (size_t i = 0; i < t->size; ++i) {
+        if (!digit(t->text[i]) || n > (max - (t->text[i] - '0')) / 10) return false;
+        n = n * 10 + t->text[i] - '0';
+        if (n > max) return false;
+    }
+    *out = n; return true;
+}
+static bool time_us(token *t, int64_t *out)
+{
+    int64_t ms;
+    if (!t || t->type != STRING || !kz_timestamp(t->text, &ms)) return false;
+    unsigned fraction = 0, digits = 0;
+    if (t->text[19] == '.') {
+        for (int i = 20; digit(t->text[i]); ++i) {
+            if (++digits > 6) return false;
+            fraction = fraction * 10 + (unsigned)(t->text[i] - '0');
+        }
+    }
+    while (digits++ < 6) fraction *= 10;
+    *out = ms * 1000 + fraction % 1000; return true;
+}
+static bool document(parser *p, char *json, size_t n)
+{
+    if (!n || n > 4096 || !utf8((unsigned char *)json, n)) return false;
+    p->s = json; p->n = n; p->p = 0; p->count = 0;
+    if (value(p, 0) != 0) return false;
+    ws(p); return p->p == n;
+}
+bool kz_parse_control(char *json, size_t n, const char digest[65], kz_command *out)
+{
+    *out = (kz_command){0}; parser p;
+    const char *const names[] = {"protocol_version", "execution_profile", "core_epoch", "command_id",
+        "correlation_id", "timestamp", "expires_at", "state"};
+    if (!document(&p, json, n) || !exact(&p, names, 8) || !hex_text(digest, 64)) return false;
+    token *epoch = field(&p, 0, "core_epoch"), *cid = field(&p, 0, "command_id"),
+        *corr = field(&p, 0, "correlation_id"), *state = field(&p, 0, "state");
+    if (!text_is(field(&p, 0, "protocol_version"), "v1") ||
+        !text_is(field(&p, 0, "execution_profile"), "deadline-permit-v1") ||
+        !uuid_text(epoch) || !uuid_text(cid) || !uuid_text(corr) ||
+        !time_us(field(&p, 0, "timestamp"), &out->created_us) ||
+        !time_us(field(&p, 0, "expires_at"), &out->expires_us) ||
+        out->expires_us <= out->created_us || out->expires_us - out->created_us > 30000000 ||
+        !state || state->type != OBJECT || state->child < 0) return false;
+    int key = state->child, val = p.t[key].next;
+    if (!equal(p.t[key].text, "on") || p.t[val].type != BOOL || p.t[val].next != state->next) return false;
+    copy(out->command_id, cid->text); copy(out->correlation_id, corr->text);
+    copy(out->epoch, epoch->text); copy(out->digest, digest);
+    out->timestamp_ms = out->created_us / 1000; out->on = p.t[val].boolean;
+    out->control = out->identifiable = true; out->error = KZ_OK; return true;
+}
+bool kz_parse_permit(char *json, size_t n, kz_permit *out)
+{
+    *out = (kz_permit){0}; parser p;
+    const char *const granted[] = {"control_version", "type", "execution_profile", "core_epoch",
+        "command_id", "boot_id", "session_id", "nonce", "intent_sha256", "core_time", "expires_at", "remaining_us"};
+    const char *const denied[] = {"control_version", "type", "execution_profile", "core_epoch",
+        "command_id", "boot_id", "session_id", "nonce", "intent_sha256", "reason"};
+    if (!document(&p, json, n)) return false;
+    out->denied = text_is(field(&p, 0, "type"), "permit_denied");
+    if (!(out->denied ? exact(&p, denied, 10) : exact(&p, granted, 12))) return false;
+    int64_t version;
+    token *epoch = field(&p, 0, "core_epoch"), *cid = field(&p, 0, "command_id");
+    if (!uint_value(field(&p, 0, "control_version"), 1, &version) || version != 1 ||
+        !text_is(field(&p, 0, "execution_profile"), "deadline-permit-v1") ||
+        !uuid_text(epoch) || !uuid_text(cid)) return false;
+    const char *names[] = {"boot_id", "session_id", "nonce", "intent_sha256"};
+    char *dest[] = {out->boot, out->session, out->nonce, out->digest};
+    for (int i = 0; i < 4; ++i) {
+        token *t = field(&p, 0, names[i]);
+        if (!t || t->type != STRING || !hex_text(t->text, i == 3 ? 64 : 32)) return false;
+        copy(dest[i], t->text);
+    }
+    copy(out->epoch, epoch->text); copy(out->command_id, cid->text);
+    if (out->denied) return text_is(field(&p, 0, "reason"), "unavailable") ||
+        text_is(field(&p, 0, "reason"), "expired") || text_is(field(&p, 0, "reason"), "invalid");
+    return text_is(field(&p, 0, "type"), "permit_grant") &&
+        time_us(field(&p, 0, "core_time"), &out->core_us) &&
+        time_us(field(&p, 0, "expires_at"), &out->expires_us) &&
+        uint_value(field(&p, 0, "remaining_us"), 2000000, &out->remaining_us) &&
+        out->remaining_us > 0 && out->core_us < out->expires_us &&
+        out->remaining_us <= out->expires_us - out->core_us;
+}
+bool kz_budget_valid(const kz_budget *b, int64_t now)
+{
+    if (b->admitted && !b->admitted(b->admission_context)) return false;
+    if (!b->qualified || b->start_us < 0 || now < b->start_us || b->remaining_us <= 0 ||
+        b->remaining_us > 2000000 || b->core_ppm >= 1000000 || b->device_ppm >= 1000000) return false;
+    int64_t elapsed = now - b->start_us;
+    if (elapsed > 2000000) return false;
+    int64_t divisor = 1000000 - b->device_ppm;
+    int64_t upper = (elapsed * (1000000 + b->core_ppm) + divisor - 1) / divisor;
+    int64_t gpio = ((int64_t)b->gpio_us * (1000000 + b->core_ppm) + 999999) / 1000000;
+    return upper + b->epsilon_us + gpio < b->remaining_us;
 }
 
 const char *kz_error_name(kz_error e)

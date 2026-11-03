@@ -16,4 +16,4 @@ extern const char kz_broker_ca_start[] asm("_binary_kz_broker_ca_start");
 #define KZ_TIME_SERVER ""
 static const char kz_broker_ca_start[] = "";
 #endif
-#define KZ_FIRMWARE_VERSION "0.11.0"
+#define KZ_FIRMWARE_VERSION "0.12.0"

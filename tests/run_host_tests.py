@@ -16,7 +16,13 @@ parser.add_argument("--cc", nargs="+", default=["cc"])
 parser.add_argument("--cmake", default="cmake")
 parser.add_argument("--core-root", type=Path, help="Read-only Core checkout for actual schema/gateway tests")
 parser.add_argument("--core-site-packages", type=Path, help="Existing compatible Core dependencies (no install)")
+parser.add_argument("--services", action="store_true", help="Opt-in disposable Docker PostgreSQL + Mosquitto TLS checks")
+parser.add_argument("--full-core-services", action="store_true", help="Also run full Core pytest inside the service fixture")
 args = parser.parse_args()
+if args.services and not args.core_root:
+    parser.error("--services requires --core-root and existing Core Python dependencies")
+if args.full_core_services and not args.services:
+    parser.error("--full-core-services requires --services")
 build = ROOT / "build" / "host-tests"
 build.mkdir(parents=True, exist_ok=True)
 exe = build / ("protocol_tests.exe" if os.name == "nt" else "protocol_tests")
@@ -27,6 +33,23 @@ subprocess.run(args.cc + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-g"
     "-DKZ_BOARD_esp32_wroom=1", "-DCONFIG_IDF_TARGET_ESP32=1",
     *sources, "-o", str(exe)], cwd=ROOT, check=True)
 subprocess.run([str(exe)], cwd=ROOT, check=True)
+crypto = ["tests/control_crypto_host.c", "-lbcrypt" if os.name == "nt" else "-lcrypto"]
+control_exe = build / ("control_tests" + exe.suffix)
+subprocess.run(args.cc + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-g", "-UNDEBUG",
+    "-Itests/stubs", "-Itests/board_stubs", "-Ikz_relay/main",
+    "-DKZ_BOARD_esp32_wroom=1", "-DCONFIG_IDF_TARGET_ESP32=1",
+    *sources[:3], "kz_relay/main/control.c", "tests/fake_platform.c", "tests/test_control.c",
+    *crypto, "-o", str(control_exe)], cwd=ROOT, check=True)
+subprocess.run([str(control_exe)], cwd=ROOT, check=True)
+bridge = build / ("control_bridge" + exe.suffix)
+subprocess.run(args.cc + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-UNDEBUG",
+    "-Itests/stubs", "-Itests/board_stubs", "-Ikz_relay/main",
+    "-DKZ_BOARD_esp32_wroom=1", "-DCONFIG_IDF_TARGET_ESP32=1",
+    *sources[:3], "kz_relay/main/control.c", "tests/fake_platform.c", "tests/control_bridge.c",
+    *crypto, "-o", str(bridge)], cwd=ROOT, check=True)
+if args.core_root:
+    subprocess.run([sys.executable, "-B", str(ROOT / "tests/test_control_integration.py"),
+        "--core-root", str(args.core_root), "--bridge", str(bridge)], check=True)
 
 # Compile the actual relay driver against recording GPIO stubs for both boards.
 common = args.cc + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-UNDEBUG",
@@ -104,7 +127,7 @@ for board, target in boards:
     subprocess.run(common + ["-std=gnu11", "-Itests/mqtt_stubs", "-DKZ_LOCAL_CONFIG=1",
         "-DCONFIG_MBEDTLS_HAVE_TIME_DATE=1", f"-DKZ_BOARD_{board}=1",
         f"-DCONFIG_IDF_TARGET_{target}=1", "tests/test_mqtt.c", *sources[:3],
-        "tests/fake_platform.c", "-o", str(output)], cwd=ROOT, check=True)
+        "tests/fake_platform.c", "kz_relay/main/control.c", *crypto, "-o", str(output)], cwd=ROOT, check=True)
     result = subprocess.run([str(output)], capture_output=True, text=True, check=True)
     messages = build / f"mqtt_{board}.jsonl"
     messages.write_text("\n".join(line.split("\t", 1)[1]
@@ -118,3 +141,15 @@ for board, target in boards:
         subprocess.run(command, check=True)
     else:
         print("SKIP: actual Core compatibility (supply --core-root and installed dependencies)")
+
+if args.services:
+    service_bridge = build / ("control_service_bridge" + exe.suffix)
+    subprocess.run(common + ["-O1", "-DKZ_SERVICE_RANDOM=1", "-DKZ_BOARD_esp32_wroom=1",
+        "-DCONFIG_IDF_TARGET_ESP32=1", *sources[:3], "kz_relay/main/control.c",
+        "tests/fake_platform.c", "tests/control_service_bridge.c", *crypto,
+        "-o", str(service_bridge)], cwd=ROOT, check=True)
+    command = [sys.executable, "-B", "-u", str(ROOT / "tests/service_integration.py"),
+        "--core-root", str(args.core_root), "--bridge", str(service_bridge)]
+    if args.full_core_services:
+        command.append("--full-core")
+    subprocess.run(command, cwd=ROOT, check=True)

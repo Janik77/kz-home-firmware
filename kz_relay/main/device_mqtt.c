@@ -5,6 +5,7 @@
 #include "command_engine.h"
 #include "relay.h"
 #include "network.h"
+#include "control.h"
 #include "mqtt_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -25,7 +26,7 @@
 
 static const char *TAG = "kz_mqtt";
 static esp_mqtt_client_handle_t client;
-static char set_topic[288], state_topic[288], ack_topic[288], status_topic[288], client_id[140];
+static char command_topic[288], reply_topic[288], request_topic[288], state_topic[288], ack_topic[288], status_topic[288], client_id[140];
 /* Worker-owned after startup. The LWT is an immutable startup-time hint,
  * never the time at which the broker eventually observes disconnection. */
 static char last_valid_time[25], lwt_payload[128];
@@ -33,11 +34,15 @@ static QueueHandle_t incoming;
 static atomic_bool ready, need_restart;
 static atomic_uint generation;
 static int subscribe_id;
+static int reply_subscribe_id;
+static bool command_subscribed, reply_subscribed;
+static kz_control control;
+static unsigned executing_generation;
 static atomic_int subscribe_started;
 static char *assembly;
 static size_t received, expected;
-static bool retained;
-typedef struct { char *json; size_t size; bool retained; unsigned generation; } message;
+static bool assembly_reply;
+typedef struct { char *json; size_t size; bool retained; unsigned generation; bool reply; } message;
 /* Worker-owned reports: do not apply another command until both can be queued.
  * This retains the causal ID when a bounded MQTT outbox is temporarily full. */
 static kz_record pending_ack;
@@ -127,17 +132,41 @@ static bool drain_reports(void)
     return true;
 }
 
+static bool still_admitted(void *unused)
+{
+    (void)unused;
+    return atomic_load(&ready) && atomic_load(&generation) == executing_generation && network_now_ms() > 0;
+}
 static void command(message *m)
 {
-    kz_command c = kz_parse(m->json, m->size);
-    if (!c.identifiable) { ESP_LOGW(TAG, "Invalid JSON/envelope; command dropped without GPIO change"); return; }
-    kz_result result = kz_process(&c, network_now_ms(), m->retained);
+    if (m->retained) return;
+    kz_result result = {0};
+    if (!m->reply) {
+        if (control_candidate(&control, m->json, m->size, m->generation,
+                              network_now_ms(), esp_timer_get_time())) {
+            char request[800];
+            /* m0 was captured before this first enqueue; never reset on retry. */
+            if (!control_request(&control, request, sizeof(request)) || !publish(request_topic, request, false))
+                control_cancel(&control, network_now_ms());
+            return;
+        }
+        result.ack = control.duplicate;
+        result.report_state = result.ack != NULL;
+    } else {
+        /* There is deliberately no network/config flag enabling qualification.
+         * Lab engines inject certified bounds; production stays fail-closed. */
+        kz_budget budget = {.qualified = false, .admitted = still_admitted};
+        if (!control_reply(&control, m->json, m->size, m->generation, esp_timer_get_time(), &budget)) return;
+        executing_generation = m->generation;
+        result = kz_process_permit(&control.command, network_now_ms(), &budget);
+    }
     if (result.ack) {
         pending_ack = *result.ack; ack_pending = true;
         ESP_LOGI(TAG, "Command outcome: %s", kz_outcome_name(result.ack->outcome));
     } else ESP_LOGW(TAG, "No durable ACK: storage unavailable/full or conflicting command ID");
     if (result.report_state) {
-        memcpy(pending_correlation, c.correlation_id, sizeof(pending_correlation));
+        memcpy(pending_correlation, result.ack ? result.ack->correlation_id : control.command.correlation_id,
+               sizeof(pending_correlation));
         state_pending = true;
     }
     drain_reports();
@@ -152,10 +181,13 @@ static void data_event(esp_mqtt_event_handle_t e)
 {
     if (e->current_data_offset == 0) {
         reset_assembly();
-        if (!atomic_load(&ready) || e->topic_len != (int)strlen(set_topic) ||
-            !e->topic || memcmp(e->topic, set_topic, e->topic_len) != 0 ||
-            e->total_data_len <= 0 || e->total_data_len > KZ_PAYLOAD_MAX) return;
-        expected = (size_t)e->total_data_len; retained = e->retain;
+        bool command = e->topic && e->topic_len == (int)strlen(command_topic) && !memcmp(e->topic, command_topic, e->topic_len);
+        bool reply = e->topic && e->topic_len == (int)strlen(reply_topic) && !memcmp(e->topic, reply_topic, e->topic_len);
+        if (!atomic_load(&ready) || (!command && !reply) || e->retain ||
+            e->total_data_len <= 0 || e->total_data_len > 4096) return;
+        /* Store kind at first fragment, not at the final callback. */
+        assembly_reply = reply;
+        expected = (size_t)e->total_data_len;
         assembly = malloc(expected + 1);
         if (!assembly) { expected = 0; return; }
     }
@@ -166,7 +198,7 @@ static void data_event(esp_mqtt_event_handle_t e)
     memcpy(assembly + received, e->data, e->data_len); received += e->data_len;
     if (received == expected) {
         assembly[expected] = 0;
-        message m = {assembly, expected, retained, atomic_load(&generation)};
+        message m = {assembly, expected, false, atomic_load(&generation), assembly_reply};
         if (xQueueSend(incoming, &m, 0) != pdTRUE) free(assembly);
         assembly = NULL; expected = received = 0;
     }
@@ -180,18 +212,22 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t event_id, void 
     case MQTT_EVENT_CONNECTED:
         atomic_store(&ready, false); atomic_fetch_add(&generation, 1); reset_assembly();
         atomic_store(&subscribe_started, (int)(esp_timer_get_time() / 1000000));
-        subscribe_id = esp_mqtt_client_subscribe(client, set_topic, 1);
-        if (subscribe_id < 0) atomic_store(&need_restart, true);
-        ESP_LOGI(TAG, "TLS MQTT connected; waiting for set subscription");
+        command_subscribed = reply_subscribed = false;
+        subscribe_id = esp_mqtt_client_subscribe(client, command_topic, 1);
+        reply_subscribe_id = esp_mqtt_client_subscribe(client, reply_topic, 1);
+        if (subscribe_id < 0 || reply_subscribe_id < 0) atomic_store(&need_restart, true);
+        ESP_LOGI(TAG, "TLS MQTT connected; waiting for control subscriptions");
         break;
     case MQTT_EVENT_SUBSCRIBED:
-        if (e->msg_id == subscribe_id) {
+        if (e->msg_id == subscribe_id || e->msg_id == reply_subscribe_id) {
             /* v3.1.1 SUBACK payload contains one granted QoS for our one topic.
              * ESP-MQTT sets error_handle on SUBSCRIBED even for a failed grant. */
             if (e->data_len == 1 && e->data && (unsigned char)e->data[0] == 1 &&
                 (!e->error_handle || e->error_handle->error_type == MQTT_ERROR_TYPE_NONE)) {
-                atomic_store(&ready, true);
-                ESP_LOGI(TAG, "Set subscription acknowledged at QoS 1");
+                if (e->msg_id == subscribe_id) command_subscribed = true;
+                if (e->msg_id == reply_subscribe_id) reply_subscribed = true;
+                atomic_store(&ready, command_subscribed && reply_subscribed);
+                ESP_LOGI(TAG, "Control subscription acknowledged at QoS 1");
             } else atomic_store(&need_restart, true);
         }
         break;
@@ -219,6 +255,11 @@ static void worker(void *arg)
         message m;
         bool got = xQueueReceive(incoming, &m, pdMS_TO_TICKS(250)) == pdTRUE;
         int64_t now = network_now_ms(), mono = esp_timer_get_time();
+        unsigned gen_now = atomic_load(&generation);
+        if (control.generation != gen_now) control_session(&control, gen_now, now);
+        if (!now || !atomic_load(&ready) || !network_has_ip() ||
+            (control.waiting && (mono < control.start_us || mono - control.start_us >= 2000000)))
+            control_cancel(&control, now);
         if (!now && !clock_stopped && mono >= offline_retry) {
             atomic_store(&ready, false);
             /* Exceptional shutdown only: send on the socket before DISCONNECT,
@@ -258,7 +299,10 @@ esp_err_t device_mqtt_start(void)
 {
     /* Fail closed before creating the client if no valid UTC can seed its will. */
     if (!remember_time() || !offline_payload(lwt_payload)) return ESP_ERR_INVALID_STATE;
-    snprintf(set_topic, sizeof(set_topic), "kzhome/v1/%s/%s/set", KZ_HOUSE_ID, KZ_DEVICE_ID);
+    control_init(&control);
+    snprintf(command_topic, sizeof(command_topic), "kzhome/v1/%s/%s/control/command", KZ_HOUSE_ID, KZ_DEVICE_ID);
+    snprintf(reply_topic, sizeof(reply_topic), "kzhome/v1/%s/%s/control/reply", KZ_HOUSE_ID, KZ_DEVICE_ID);
+    snprintf(request_topic, sizeof(request_topic), "kzhome/v1/%s/%s/control/request", KZ_HOUSE_ID, KZ_DEVICE_ID);
     snprintf(state_topic, sizeof(state_topic), "kzhome/v1/%s/%s/state", KZ_HOUSE_ID, KZ_DEVICE_ID);
     snprintf(ack_topic, sizeof(ack_topic), "kzhome/v1/%s/%s/ack", KZ_HOUSE_ID, KZ_DEVICE_ID);
     snprintf(status_topic, sizeof(status_topic), "kzhome/v1/%s/%s/status", KZ_HOUSE_ID, KZ_DEVICE_ID);
