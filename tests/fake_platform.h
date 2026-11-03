@@ -4,5 +4,8 @@
 extern int fake_apply_count, fake_fail_commit;
 extern int64_t fake_mono_ms;
 extern bool fake_gpio_fails;
+extern int64_t fake_commit_delay_ms;
+extern bool fake_revoke_on_commit, fake_admitted;
+void fake_store_blob(int slot, const void *data, unsigned size);
 void fake_reset_storage(void);
 void fake_reboot(void);

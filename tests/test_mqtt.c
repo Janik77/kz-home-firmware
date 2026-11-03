@@ -90,7 +90,7 @@ int esp_mqtt_client_publish(esp_mqtt_client_handle_t c, const char *topic,
     record(topic, data, qos, retain, true); return fail_publish ? -1 : publishes;
 }
 int esp_mqtt_client_subscribe(esp_mqtt_client_handle_t c, const char *topic, int qos)
-{ (void)c; assert(qos == 1 && strcmp(topic, set_topic) == 0); return 42; }
+{ (void)c; assert(qos == 1); if (!strcmp(topic, command_topic)) return 42; assert(!strcmp(topic, reply_topic)); return 43; }
 esp_err_t esp_mqtt_client_start(esp_mqtt_client_handle_t c)
 { (void)c; ++starts; return ESP_OK; }
 esp_err_t esp_mqtt_client_stop(esp_mqtt_client_handle_t c)
@@ -106,6 +106,7 @@ static void event(int id, int grant)
     char qos = (char)grant;
     esp_mqtt_event_t e = {.msg_id = 42, .data = &qos, .data_len = 1};
     mqtt_event(NULL, NULL, id, &e);
+    if (id == MQTT_EVENT_SUBSCRIBED) { e.msg_id = 43; mqtt_event(NULL, NULL, id, &e); }
 }
 static void tick(int count, int64_t advance_us)
 {
@@ -148,9 +149,33 @@ int main(void)
     assert(strstr(last_payload, "12:01:00.000Z"));
     assert(strcmp(captured.session.last_will.msg, startup_will) == 0);
 
+    /* Full worker exchange stays blocked by the unqualified production policy. */
+    const char *candidate = "{\"protocol_version\":\"v1\",\"execution_profile\":\"deadline-permit-v1\","
+        "\"core_epoch\":\"11111111-1111-4111-8111-111111111111\","
+        "\"command_id\":\"22222222-2222-4222-8222-222222222222\","
+        "\"correlation_id\":\"33333333-3333-4333-8333-333333333333\","
+        "\"timestamp\":\"2026-11-02T10:00:00Z\",\"expires_at\":\"2026-11-02T10:00:30Z\",\"state\":{\"on\":true}}";
+    inject("kzhome/v1/test_house/test_relay/set", candidate); assert(queue_size == 0);
+    inject("kzhome/v1/other_house/test_relay/control/command", candidate); assert(queue_size == 0);
+    esp_mqtt_event_t retained = {.topic=command_topic,.topic_len=(int)strlen(command_topic),
+        .data=(char *)candidate,.data_len=(int)strlen(candidate),
+        .total_data_len=(int)strlen(candidate),.retain=1};
+    mqtt_event(NULL,NULL,MQTT_EVENT_DATA,&retained); assert(queue_size==0);
+    inject(command_topic, candidate); tick(1, 0);
+    assert(control.waiting && strstr(last_payload,"permit_request") && !fake_apply_count);
+    char grant[1400];
+    snprintf(grant,sizeof(grant),"{\"control_version\":1,\"type\":\"permit_grant\","
+        "\"execution_profile\":\"deadline-permit-v1\",\"core_epoch\":\"%s\",\"command_id\":\"%s\","
+        "\"boot_id\":\"%s\",\"session_id\":\"%s\",\"nonce\":\"%s\",\"intent_sha256\":\"%s\","
+        "\"core_time\":\"2026-11-02T10:00:01Z\",\"expires_at\":\"2026-11-02T10:00:30Z\",\"remaining_us\":1000000}",
+        control.command.epoch,control.command.command_id,control.boot,control.session,control.nonce,control.command.digest);
+    inject(reply_topic,grant); tick(1,0);
+    assert(!control.waiting && !fake_apply_count && strstr(last_payload,"rejected"));
+    inject(reply_topic,grant); tick(1,0); assert(!fake_apply_count);
+
     /* Status-topic and malformed command traffic cannot actuate the relay. */
     inject(status_topic, "{\"status\":\"online\"}"); assert(queue_size == 0);
-    inject(set_topic, "{\"status\":\"offline\"}"); tick(1, 0);
+    inject(command_topic, "{\"status\":\"offline\"}"); tick(1, 0);
     assert(fake_apply_count == 0);
     stamp = "malformed"; before = status_count;
     assert(!online_report() && status_count == before);

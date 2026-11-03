@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 include("${CMAKE_CURRENT_LIST_DIR}/boards/select.cmake")
-set(PROJECT_VER "0.11.0")
+set(PROJECT_VER "0.12.0")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(DEPENDENCIES_LOCK "${CMAKE_CURRENT_LIST_DIR}/dependencies.lock.${IDF_TARGET}")
 project(kz_relay)

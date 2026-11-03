@@ -18,6 +18,9 @@ typedef struct {
     int64_t timestamp_ms;
     bool on, identifiable;
     kz_error error;
+    bool control;
+    int64_t created_us, expires_us;
+    char epoch[37], digest[65];
 } kz_command;
 typedef struct {
     uint32_t version;
@@ -25,7 +28,27 @@ typedef struct {
     int64_t first_ms, timestamp_ms;
     char command_id[129], correlation_id[129];
     uint8_t on;
+    int64_t created_us, expires_us;
+    char epoch[37], digest[65];
 } kz_record;
+
+typedef struct {
+    char epoch[37], command_id[37], boot[33], session[33], nonce[33], digest[65];
+    int64_t core_us, expires_us, remaining_us;
+    bool denied;
+} kz_permit;
+
+typedef struct {
+    int64_t start_us, remaining_us;
+    uint32_t core_ppm, device_ppm, epsilon_us, gpio_us;
+    bool qualified;
+    bool (*admitted)(void *);
+    void *admission_context;
+} kz_budget;
+
+bool kz_parse_control(char *json, size_t length, const char digest[65], kz_command *out);
+bool kz_parse_permit(char *json, size_t length, kz_permit *out);
+bool kz_budget_valid(const kz_budget *budget, int64_t now_us);
 
 /* Mutates the input buffer. No heap allocation, network, GPIO or IDF dependency. */
 kz_command kz_parse(char *json, size_t length);

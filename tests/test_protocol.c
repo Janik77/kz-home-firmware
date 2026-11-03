@@ -107,90 +107,22 @@ static void time_tests(void)
 }
 static void engine_tests(void)
 {
-    kz_command c = with_state("{\"on\":true}"); int64_t now = c.timestamp_ms;
     fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    kz_result r = kz_process(&c, now, false);
-    CHECK(r.ack && r.ack->outcome == KZ_APPLIED && relay_state() && fake_apply_count == 1);
-    r = kz_process(&c, now + 10, false); CHECK(r.ack->outcome == KZ_APPLIED && fake_apply_count == 1);
-    fake_reboot(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now + 20, false);
-    CHECK(r.ack->outcome == KZ_APPLIED && !relay_state() && fake_apply_count == 0);
-    r = kz_process(&c, now + 400000, false); CHECK(r.ack->outcome == KZ_APPLIED && fake_apply_count == 0);
-    c.on = false; r = kz_process(&c, now + 21, false); CHECK(!r.ack && fake_apply_count == 0);
-    c.on = true;
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now + 300001, false); CHECK(r.ack->outcome == KZ_REJECTED && r.ack->error == KZ_TIMEOUT && !fake_apply_count);
-    fake_reboot(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now + 300010, false); CHECK(r.ack->outcome == KZ_REJECTED && !fake_apply_count);
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now - 30001, false); CHECK(r.ack->outcome == KZ_REJECTED && !fake_apply_count);
-    r = kz_process(&c, now, false); CHECK(r.ack->outcome == KZ_REJECTED && !fake_apply_count);
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now, true); CHECK(r.ack->outcome == KZ_REJECTED && !fake_apply_count);
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    int slot = journal_reserve(&c, now, KZ_OK); CHECK(slot >= 0);
-    fake_reboot(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now + 1, false); CHECK(r.ack->outcome == KZ_FAILED && !fake_apply_count);
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    fake_fail_commit = 1; r = kz_process(&c, now, false); CHECK(!r.ack && !fake_apply_count && !journal_healthy());
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    fake_fail_commit = 2; r = kz_process(&c, now, false); CHECK(!r.ack && fake_apply_count == 1 && !journal_healthy());
-    fake_reboot(); CHECK(journal_init() == ESP_OK);
-    r = kz_process(&c, now + 1, false); CHECK(r.ack->outcome == KZ_FAILED && !fake_apply_count && !relay_state());
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    fake_gpio_fails = true; r = kz_process(&c, now, false); CHECK(r.ack->outcome == KZ_FAILED);
-    fake_gpio_fails = false; r = kz_process(&c, now + 1, false); CHECK(r.ack->outcome == KZ_FAILED && fake_apply_count == 1);
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    for (int i = 0; i < KZ_JOURNAL_SLOTS; ++i) {
-        snprintf(c.command_id, sizeof(c.command_id), "c%d", i);
-        r = kz_process(&c, now, false); CHECK(r.ack && r.ack->outcome == KZ_APPLIED);
+    kz_command c = with_state("{\"on\":true}");
+    for (int delay = 0; delay <= 300000; delay += 1000) {
+        kz_result r = kz_process(&c, c.timestamp_ms + delay, false);
+        CHECK(!r.ack && !r.report_state && fake_apply_count == 0);
     }
-    strcpy(c.command_id, "overflow"); r = kz_process(&c, now, false);
-    CHECK(!r.ack && fake_apply_count == KZ_JOURNAL_SLOTS);
-    fake_mono_ms = 600000; c.timestamp_ms = now + 600000;
-    r = kz_process(&c, now + 600000, false); CHECK(r.ack && r.ack->outcome == KZ_APPLIED);
-    strcpy(c.command_id, "c0"); c.timestamp_ms = now;
-    r = kz_process(&c, now + 600001, false); CHECK(r.ack->outcome == KZ_REJECTED && r.ack->error == KZ_TIMEOUT);
-    /* Two independent intents must work in both directions. */
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    c = with_state("{\"on\":true}"); r = kz_process(&c, now, false);
-    CHECK(r.ack->outcome == KZ_APPLIED && relay_state());
-    strcpy(c.command_id, "off"); c.on = false;
-    r = kz_process(&c, now + 1, false);
-    CHECK(r.ack->outcome == KZ_APPLIED && !relay_state() && fake_apply_count == 2);
-    const char *bad_states[] = {"{}", "{\"on\":null}", "{\"on\":1}", "{\"unknown\":true}"};
-    for (unsigned i = 0; i < sizeof(bad_states)/sizeof(bad_states[0]); ++i) {
-        fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-        c = with_state(bad_states[i]); r = kz_process(&c, now, false);
-        CHECK(r.ack && r.ack->outcome == KZ_REJECTED && !fake_apply_count);
-        fake_reboot(); CHECK(journal_init() == ESP_OK);
-        r = kz_process(&c, now + 1, false);
-        CHECK(r.ack && r.ack->outcome == KZ_REJECTED && !fake_apply_count);
-    }
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    c = with_state("{\"on\":true}"); r = kz_process(&c, 0, false);
-    CHECK(!r.ack && !fake_apply_count);
-    c.identifiable = false; r = kz_process(&c, now, false);
-    CHECK(!r.ack && !fake_apply_count);
-    /* A malformed reuse of an applied OFF ID must not inherit an applied ACK
-     * just because invalid parsing leaves the desired boolean at false. */
-    fake_reset_storage(); CHECK(journal_init() == ESP_OK);
-    c = with_state("{\"on\":false}"); r = kz_process(&c, now, false);
-    CHECK(r.ack && r.ack->outcome == KZ_APPLIED);
-    c = with_state("{\"on\":false,\"unknown\":true}");
-    r = kz_process(&c, now + 1, false);
-    CHECK(!r.ack && fake_apply_count == 1);
 }
 int main(void)
 {
     parser_tests(); time_tests(); engine_tests();
-    /* Document the existing safety gap without silently changing its policy:
-     * Core's 30s lifecycle can expire while this first-delivery ON is valid. */
+    /* Regression: the former 60s late-execution gap has no legacy admission path. */
     fake_reset_storage(); CHECK(journal_init() == ESP_OK);
     kz_command late = with_state("{\"on\":true}");
     kz_result result = kz_process(&late, late.timestamp_ms + 60000, false);
-    CHECK(result.ack && result.ack->outcome == KZ_APPLIED);
-    CHECK(relay_state() && fake_apply_count == 1);
-    printf("PASS: %d checks (parser, freshness, durable journal/engine, fault injection)\n", checks);
+    CHECK(!result.ack);
+    CHECK(!relay_state() && fake_apply_count == 0);
+    printf("PASS: %d checks (legacy parser, timestamps, reclaim rules, legacy actuation denied)\n", checks);
     return 0;
 }
