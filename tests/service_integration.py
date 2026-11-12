@@ -36,6 +36,9 @@ class Services:
     def __init__(self):
         self.name = "kz-control-lab-" + uuid4().hex[:12]
         self.directory = Path(tempfile.mkdtemp(prefix=self.name + "-"))
+        # Mosquitto drops to its own UID inside the container on Linux.
+        # Only this ephemeral directory is traversable; no production inputs exist.
+        self.directory.chmod(0o755)
         self.password = secrets.token_urlsafe(32)
         self.containers = []
         self.network = None
@@ -182,9 +185,21 @@ log_type all
             "-c",
             "/lab/mosquitto.conf",
         )
+        # The image's temporary init server accepts Unix sockets but not TCP.
+        # Wait for the final TCP listener, otherwise the first host connection races
+        # the init server shutdown even though socket pg_isready already succeeded.
         for _ in range(60):
             if "accepting connections" in docker(
-                "exec", pg, "pg_isready", "-U", "lab", check=False
+                "exec",
+                pg,
+                "pg_isready",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                "lab",
+                "-d",
+                "lab",
+                check=False,
             ):
                 break
             time.sleep(0.25)
@@ -278,10 +293,32 @@ class Firmware:
             self.child.stdout.close()
 
 
+class Worker(Firmware):
+    """Transport bridge only: payload bytes and QoS/retain come from C worker."""
+
+    def _line(self, kind, payload):
+        self.child.stdin.write(
+            kind + ("\t" + payload if payload is not None else "") + "\n"
+        )
+        self.child.stdin.flush()
+        publications = []
+        while True:
+            line = self.child.stdout.readline()
+            assert line, "C MQTT worker exited"
+            if line.startswith("PUB\t"):
+                _, topic, qos, retain, body = line.rstrip("\n").split("\t", 4)
+                publications.append((topic, body, int(qos), bool(int(retain))))
+            else:
+                result = json.loads(line)
+                result["publications"] = publications
+                return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--core-root", type=Path, required=True)
     parser.add_argument("--bridge", type=Path, required=True)
+    parser.add_argument("--worker-bridge", type=Path, required=True)
     parser.add_argument(
         "--full-core",
         action="store_true",
@@ -480,7 +517,7 @@ def main():
             flush=True,
         )
 
-        def prepare(lifetime_us=30_000_000):
+        def prepare(lifetime_us=30_000_000, *, on=True):
             timer.offset += 31_000_000
             with Session(engine) as s:
                 service = CommandService(
@@ -494,6 +531,7 @@ def main():
                     service.expire(pending)
                 s.commit()
                 value = row()
+                value.requested_on = on
                 value.expires_at = value.created_at + timedelta(
                     microseconds=lifetime_us
                 )
@@ -746,9 +784,183 @@ def main():
                         await asyncio.sleep(0.02)
 
             await ready()
+
+            async def wait_evidence(marker, count=1):
+                async with asyncio.timeout(5):
+                    while evidence.count(marker) < count:
+                        await asyncio.sleep(0.01)
+
+            def read_receipt(identifier):
+                with Session(engine) as s:
+                    return CommandService(
+                        CommandRepository(s), control_authority=authority
+                    ).get("test_house", identifier)
+
+            async def on_off_cycle():
+                # One real C process/journal/relay state for the whole ON -> OFF cycle.
+                firmware = Firmware(args.bridge)
+                try:
+                    async with client() as device:
+                        await device.subscribe(base + "/control/command", qos=1)
+                        await device.subscribe(base + "/control/reply", qos=1)
+                        for writes, on in enumerate((True, False), start=1):
+                            await asyncio.sleep(1.05)
+                            identifier = prepare(on=on)
+                            await gateway.send_control_command(
+                                "test_house", "test_relay", identifier
+                            )
+                            candidate = await receive(device, base + "/control/command")
+                            command_value = json.loads(candidate)
+                            correlation = command_value["correlation_id"]
+                            req = firmware.op("candidate", candidate)["request"]
+                            await device.publish(
+                                base + "/control/request", json.dumps(req), qos=1
+                            )
+                            reply = await receive(device, base + "/control/reply")
+                            assert json.loads(reply)["type"] == "permit_grant"
+                            result = firmware.op("reply", reply)
+                            assert result["status"] == "applied" and result["on"] is on
+                            assert result["writes"] == writes
+
+                            ack_value = dict(
+                                command_id=identifier,
+                                correlation_id=correlation,
+                                status=result["status"],
+                            )
+                            # A correct command ID with an unrelated correlation is not evidence.
+                            await device.publish(
+                                base + "/ack",
+                                json.dumps(
+                                    {**ack_value, "correlation_id": str(uuid4())}
+                                ),
+                                qos=1,
+                            )
+                            await wait_evidence(("ack", identifier))
+                            assert read_receipt(identifier).ack_status is None
+                            await device.publish(
+                                base + "/ack", json.dumps(ack_value), qos=1
+                            )
+                            await wait_evidence(("ack", identifier), 2)
+                            partial = read_receipt(identifier)
+                            assert partial.ack_status == "applied"
+                            assert (
+                                partial.status == "dispatched"
+                                and partial.state_received_at is None
+                            )
+
+                            state_value = dict(
+                                timestamp=timer.wall().isoformat(),
+                                correlation_id=correlation,
+                                state={"on": on},
+                            )
+                            wrong = str(uuid4())
+                            await device.publish(
+                                base + "/state",
+                                json.dumps({**state_value, "correlation_id": wrong}),
+                                qos=1,
+                            )
+                            await wait_evidence(("state", wrong))
+                            assert read_receipt(identifier).state_received_at is None
+                            # Correlated but opposite state also cannot confirm completion.
+                            await device.publish(
+                                base + "/state",
+                                json.dumps({**state_value, "state": {"on": not on}}),
+                                qos=1,
+                            )
+                            await wait_evidence(("state", correlation))
+                            assert read_receipt(identifier).status == "dispatched"
+                            await device.publish(
+                                base + "/state", json.dumps(state_value), qos=1
+                            )
+                            await wait_evidence(("state", correlation), 2)
+                            completed = read_receipt(identifier)
+                            assert completed.status == "applied"
+                            assert (
+                                completed.requested_on is on
+                                and completed.reported_on is on
+                            )
+                            assert (
+                                completed.ack_received_at
+                                and completed.state_received_at
+                            )
+                            with Session(engine) as s:
+                                assert s.get(DeviceORM, "test_relay").state == {
+                                    "on": on
+                                }
+                            assert firmware.op("reply", reply)["writes"] == writes
+                            print(
+                                f"MQTT C HOST: {'ON' if on else 'OFF'} linked ACK/state, "
+                                "wrong correlation/state rejected, replay inert PASS",
+                                flush=True,
+                            )
+                finally:
+                    firmware.close()
+
+            async def worker_roundtrip():
+                await asyncio.sleep(1.05)
+                identifier = prepare()
+                worker = Worker(args.worker_bridge, lab=False)
+                try:
+                    async with client() as device:
+                        await device.subscribe(base + "/control/command", qos=1)
+                        await device.subscribe(base + "/control/reply", qos=1)
+
+                        async def forward(result):
+                            for topic, payload, qos, retain in result["publications"]:
+                                await device.publish(
+                                    topic, payload, qos=qos, retain=retain
+                                )
+
+                        await forward(worker.op("start"))
+                        await gateway.send_control_command(
+                            "test_house", "test_relay", identifier
+                        )
+                        candidate = await receive(device, base + "/control/command")
+                        value = worker.op("candidate", candidate)
+                        assert value["waiting"] and value["writes"] == 0
+                        requests = [
+                            p
+                            for p in value["publications"]
+                            if p[0] == base + "/control/request"
+                        ]
+                        assert len(requests) == 1 and requests[0][2:] == (1, False)
+                        await forward(value)
+                        reply = await receive(device, base + "/control/reply")
+                        assert json.loads(reply)["type"] == "permit_grant"
+                        value = worker.op("reply", reply)
+                        assert not value["waiting"] and value["writes"] == 0
+                        acks = [
+                            p for p in value["publications"] if p[0] == base + "/ack"
+                        ]
+                        assert len(acks) == 1 and acks[0][2:] == (1, False)
+                        ack_value = json.loads(acks[0][1])
+                        assert ack_value["command_id"] == identifier
+                        assert (
+                            ack_value["correlation_id"]
+                            == json.loads(candidate)["correlation_id"]
+                        )
+                        assert ack_value["status"] == "rejected"
+                        await forward(value)
+                        await wait_evidence(("ack", identifier))
+                        completed = read_receipt(identifier)
+                        assert completed.status == "failed"
+                        assert completed.failure_code == "device_rejected"
+                        assert completed.ack_status == "rejected"
+                        assert worker.op("reply", reply)["writes"] == 0
+                        print(
+                            "MQTT REAL C WORKER: candidate/request/grant/rejected ACK -> "
+                            "Core failed; production qualification closed; zero GPIO PASS",
+                            flush=True,
+                        )
+                finally:
+                    worker.close()
+
             try:
+                await on_off_cycle()
+                await worker_roundtrip()
                 for mode in (
                     "apply",
+                    "gpio-failure",
                     "blocked",
                     "expired",
                     "delayed-command",
@@ -837,13 +1049,20 @@ def main():
                                 reply = await receive(
                                     reconnected, base + "/control/reply"
                                 )
+                        if mode == "gpio-failure":
+                            firmware.op("gpio-failure")
                         result = firmware.op("reply", reply)
                         expected = mode in (
                             "apply",
                             "duplicate-request",
                             "replay",
                             "late-ack",
+                            "gpio-failure",  # One attempted write, no state change.
                         )
+                        if mode == "gpio-failure":
+                            assert (
+                                result["status"] == "failed" and result["on"] is False
+                            )
                         assert result["writes"] == int(expected), (mode, result)
                         assert firmware.op("legacy", candidate)["writes"] == int(
                             expected
@@ -923,6 +1142,10 @@ def main():
                                 )
                             if mode == "apply":
                                 assert receipt.status == "applied"
+                            if mode == "gpio-failure":
+                                assert receipt.status == "failed"
+                                assert receipt.ack_status == "failed"
+                                assert receipt.failure_code == "device_failed"
                         print(
                             "MQTT E2E: " + mode + " PASS (recording GPIO only)",
                             flush=True,
@@ -1148,6 +1371,10 @@ def main():
             "FAULT SIMULATION: wall jump, suspend gap, rollback, unqualified bounds, health loss; default gate closed PASS",
             flush=True,
         )
+        from http_service_probe import check_http
+
+        asyncio.run(check_http(services, engine))
+
         env = os.environ.copy()
         env["TEST_POSTGRESQL_URL"] = services.url
         subprocess.run(

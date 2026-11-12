@@ -14,6 +14,8 @@ static int iterations;
 static int64_t step_us;
 static jmp_buf worker_exit;
 static void (*iteration_hook)(int);
+/* Optional host integration observer; no change to the production worker. */
+static void (*publication_hook)(const char *, const char *, int, int);
 static esp_mqtt_client_config_t captured;
 static message queue[4];
 static unsigned queue_size;
@@ -71,6 +73,7 @@ esp_err_t esp_mqtt_client_register_event(esp_mqtt_client_handle_t c, int event,
 static void record(const char *topic, const char *data, int qos, int retain, bool sync)
 {
     assert(qos == 1);
+    if (publication_hook) publication_hook(topic, data, qos, retain);
     snprintf(last_payload, sizeof(last_payload), "%s", data);
     if (strcmp(topic, status_topic) == 0) {
         assert(retain); ++status_count;

@@ -1,0 +1,66 @@
+name: ESP-IDF target builds
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  target-build:
+    name: ESP-IDF / ${{ matrix.board }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: esp32_wroom
+            target: esp32
+          - board: esp32c6
+            target: esp32c6
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Official espressif/idf:v6.0.3, resolved 2026-11-12.
+      IDF_IMAGE: espressif/idf@sha256:54278f2c01e6e759502e2f04c9103589c17528923426f4d63193490c7a08f555
+      KZ_CI_BOARD: ${{ matrix.board }}
+      KZ_CI_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out Firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build with official ESP-IDF 6.0.3
+        run: |
+          test ! -e kz_relay/local
+          # Explicit container: no implicit runner socket mounts or credentials.
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp -e IDF_CCACHE_ENABLE=0 \
+            -e IDF_GIT_SAFE_DIR=/project -e KZ_CI_BOARD \
+            -v "$GITHUB_WORKSPACE:/project" -w /project/kz_relay \
+            "$IDF_IMAGE" bash -e -o pipefail -c '
+              test "$(git -C "$IDF_PATH" rev-parse HEAD)" = "76f5dedd9950a3012fee8fb7d5586df21fc67802"
+              idf.py --version
+              idf.py -B "build/$KZ_CI_BOARD" -D "KZ_BOARD=$KZ_CI_BOARD" build
+              idf.py -B "build/$KZ_CI_BOARD" -D "KZ_BOARD=$KZ_CI_BOARD" size
+            '
+      - name: Check target, outputs and dependency locks
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          build = Path('kz_relay/build') / os.environ['KZ_CI_BOARD']
+          description = json.loads((build / 'project_description.json').read_text())
+          assert description['target'] == os.environ['KZ_CI_TARGET'], description['target']
+          for name in ('kz_relay.bin', 'kz_relay.elf', 'bootloader/bootloader.bin', 'partition_table/partition-table.bin'):
+              path = build / name
+              assert path.is_file() and path.stat().st_size > 0, str(path)
+              print(f'{path}: {path.stat().st_size} bytes')
+          PYCODE
+          git diff --exit-code -- kz_relay/dependencies.lock kz_relay/dependencies.lock.esp32 kz_relay/dependencies.lock.esp32c6
+          sha256sum "kz_relay/build/$KZ_CI_BOARD/kz_relay.bin"
