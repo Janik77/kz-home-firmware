@@ -185,9 +185,21 @@ log_type all
             "-c",
             "/lab/mosquitto.conf",
         )
+        # The image's temporary init server accepts Unix sockets but not TCP.
+        # Wait for the final TCP listener, otherwise the first host connection races
+        # the init server shutdown even though socket pg_isready already succeeded.
         for _ in range(60):
             if "accepting connections" in docker(
-                "exec", pg, "pg_isready", "-U", "lab", check=False
+                "exec",
+                pg,
+                "pg_isready",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                "lab",
+                "-d",
+                "lab",
+                check=False,
             ):
                 break
             time.sleep(0.25)

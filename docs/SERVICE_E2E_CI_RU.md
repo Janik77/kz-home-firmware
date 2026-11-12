@@ -73,7 +73,12 @@ E2E выполняется только в CI. Полный локальный h
 recovery/CAS и cleanup. Полный Core pytest: **693 passed, 7 failed, 10 skipped**.
 Все семь failures — прежние assertions migration head `0007` вместо `0008`.
 Именно поэтому финальный CI pin использует исправленные tests из Core PR #32;
-failures не исключены и не превращены в xfail. Исторический отчёт
+failures не исключены и не превращены в xfail.
+
+Второй run выявил startup race исходного fixture: socket `pg_isready` мог
+увидеть временный init server до его shutdown. Readiness теперь требует TCP
+`127.0.0.1` внутри собственного контейнера и БД `lab`, поэтому временный server
+без TCP listener не может дать ложную готовность. Cleanup прошёл и при этом отказе. Исторический отчёт
 `CONTROL_SERVICE_INTEGRATION_V0.22_V0.12_RU.md` описывает прежний запуск на другой
 базе и не доказывает результат этого commit. Актуальное доказательство — успешный
 run workflow на SHA draft PR; до такого run новые service проверки не подтверждены.
