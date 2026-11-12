@@ -45,7 +45,7 @@ Fresh checkout не содержит `kz_relay/local`; job явно провер
 
 ```sh
 for board in esp32_wroom esp32c6; do
-  docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  docker run --rm --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" -e HOME=/tmp \
     -e IDF_CCACHE_ENABLE=0 -e IDF_GIT_SAFE_DIR=/project \
     -v "$PWD:/project" -w /project/kz_relay \
     espressif/idf@sha256:54278f2c01e6e759502e2f04c9103589c17528923426f4d63193490c7a08f555 \
@@ -61,7 +61,8 @@ done
 
 Обычный `pull_request`, не `pull_request_target`; `contents: read`, checkout
 без сохранения credentials. Одноразовый GitHub-hosted runner и официальный
-job container без privileged mode, host Docker socket, устройств, secrets,
+явно запускаемый build container с непривилегированным UID, `--cap-drop=ALL`
+и `no-new-privileges`, без host Docker socket, устройств, secrets,
 environments, shared cache, deploy или привилегированного follow-up.
 Изменения workflow всё равно требуют review.
 

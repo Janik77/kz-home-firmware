@@ -22,14 +22,12 @@ jobs:
             target: esp32
           - board: esp32c6
             target: esp32c6
-    container:
-      # Official espressif/idf:v6.0.3 multi-platform image, resolved 2026-11-12.
-      image: espressif/idf@sha256:54278f2c01e6e759502e2f04c9103589c17528923426f4d63193490c7a08f555
     defaults:
       run:
         shell: bash
     env:
-      IDF_CCACHE_ENABLE: "0"
+      # Official espressif/idf:v6.0.3, resolved 2026-11-12.
+      IDF_IMAGE: espressif/idf@sha256:54278f2c01e6e759502e2f04c9103589c17528923426f4d63193490c7a08f555
       KZ_CI_BOARD: ${{ matrix.board }}
       KZ_CI_TARGET: ${{ matrix.target }}
     steps:
@@ -39,17 +37,21 @@ jobs:
           persist-credentials: false
       - name: Build with official ESP-IDF 6.0.3
         run: |
-          # Job containers do not rely on the image's interactive entrypoint.
-          . "$IDF_PATH/export.sh"
-          test "$(git -C "$IDF_PATH" rev-parse HEAD)" = "76f5dedd9950a3012fee8fb7d5586df21fc67802"
-          idf.py --version
           test ! -e kz_relay/local
-          cd kz_relay
-          idf.py -B "build/$KZ_CI_BOARD" -D "KZ_BOARD=$KZ_CI_BOARD" build
-          idf.py -B "build/$KZ_CI_BOARD" -D "KZ_BOARD=$KZ_CI_BOARD" size
+          # Explicit container: no implicit runner socket mounts or credentials.
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp -e IDF_CCACHE_ENABLE=0 \
+            -e IDF_GIT_SAFE_DIR=/project -e KZ_CI_BOARD \
+            -v "$GITHUB_WORKSPACE:/project" -w /project/kz_relay \
+            "$IDF_IMAGE" bash -e -o pipefail -c '
+              test "$(git -C "$IDF_PATH" rev-parse HEAD)" = "76f5dedd9950a3012fee8fb7d5586df21fc67802"
+              idf.py --version
+              idf.py -B "build/$KZ_CI_BOARD" -D "KZ_BOARD=$KZ_CI_BOARD" build
+              idf.py -B "build/$KZ_CI_BOARD" -D "KZ_BOARD=$KZ_CI_BOARD" size
+            '
       - name: Check target, outputs and dependency locks
         run: |
-          python - <<'PYCODE'
+          python3 - <<'PYCODE'
           import json, os
           from pathlib import Path
           build = Path('kz_relay/build') / os.environ['KZ_CI_BOARD']
