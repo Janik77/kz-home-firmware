@@ -86,3 +86,6 @@ CommandService или physical classification, было бы неверно. З�
 Локально Docker отсутствует. Результат настоящих HTTP/broker/DB проверок следует
 проверять в CI на точном head SHA draft PR; исторический успех PR #7 не является
 доказательством новых сценариев. Десять прежних opt-in skips не считаются PASS.
+
+Следующий проект: [контракт physical command submission](PHYSICAL_COMMAND_SUBMISSION_CONTRACT_RU.md) —
+инварианты, crash/revoke matrix и критерии host-only test policy; runtime gates не открывает.
