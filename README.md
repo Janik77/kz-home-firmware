@@ -332,3 +332,9 @@ Host runner `tests/run_host_tests.py` использует настоящий pa
 Эти тесты не моделируют физическую relay module или reset electrical waveform.
 
 Актуальный control ACL и ограничения commissioning: [CONTROL_PERMIT_V0.12.md](docs/CONTROL_PERMIT_V0.12.md).
+
+## ESP-IDF target CI
+
+Автоматические сборки ESP32-WROOM и ESP32-C6 на закреплённом официальном
+ESP-IDF 6.0.3: [ESP_IDF_CI_RU.md](docs/ESP_IDF_CI_RU.md).
+Это проверка сборки без local config, не аппаратная квалификация.
