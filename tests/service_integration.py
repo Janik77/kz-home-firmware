@@ -293,10 +293,32 @@ class Firmware:
             self.child.stdout.close()
 
 
+class Worker(Firmware):
+    """Transport bridge only: payload bytes and QoS/retain come from C worker."""
+
+    def _line(self, kind, payload):
+        self.child.stdin.write(
+            kind + ("\t" + payload if payload is not None else "") + "\n"
+        )
+        self.child.stdin.flush()
+        publications = []
+        while True:
+            line = self.child.stdout.readline()
+            assert line, "C MQTT worker exited"
+            if line.startswith("PUB\t"):
+                _, topic, qos, retain, body = line.rstrip("\n").split("\t", 4)
+                publications.append((topic, body, int(qos), bool(int(retain))))
+            else:
+                result = json.loads(line)
+                result["publications"] = publications
+                return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--core-root", type=Path, required=True)
     parser.add_argument("--bridge", type=Path, required=True)
+    parser.add_argument("--worker-bridge", type=Path, required=True)
     parser.add_argument(
         "--full-core",
         action="store_true",
@@ -874,8 +896,68 @@ def main():
                 finally:
                     firmware.close()
 
+            async def worker_roundtrip():
+                await asyncio.sleep(1.05)
+                identifier = prepare()
+                worker = Worker(args.worker_bridge, lab=False)
+                try:
+                    async with client() as device:
+                        await device.subscribe(base + "/control/command", qos=1)
+                        await device.subscribe(base + "/control/reply", qos=1)
+
+                        async def forward(result):
+                            for topic, payload, qos, retain in result["publications"]:
+                                await device.publish(
+                                    topic, payload, qos=qos, retain=retain
+                                )
+
+                        await forward(worker.op("start"))
+                        await gateway.send_control_command(
+                            "test_house", "test_relay", identifier
+                        )
+                        candidate = await receive(device, base + "/control/command")
+                        value = worker.op("candidate", candidate)
+                        assert value["waiting"] and value["writes"] == 0
+                        requests = [
+                            p
+                            for p in value["publications"]
+                            if p[0] == base + "/control/request"
+                        ]
+                        assert len(requests) == 1 and requests[0][2:] == (1, False)
+                        await forward(value)
+                        reply = await receive(device, base + "/control/reply")
+                        assert json.loads(reply)["type"] == "permit_grant"
+                        value = worker.op("reply", reply)
+                        assert not value["waiting"] and value["writes"] == 0
+                        acks = [
+                            p for p in value["publications"] if p[0] == base + "/ack"
+                        ]
+                        assert len(acks) == 1 and acks[0][2:] == (1, False)
+                        ack_value = json.loads(acks[0][1])
+                        assert ack_value["command_id"] == identifier
+                        assert (
+                            ack_value["correlation_id"]
+                            == json.loads(candidate)["correlation_id"]
+                        )
+                        assert ack_value["status"] == "rejected"
+                        await forward(value)
+                        await wait_evidence(("ack", identifier))
+                        completed = read_receipt(identifier)
+                        assert completed.status == "failed"
+                        assert completed.failure_code == "device_rejected"
+                        assert completed.ack_status == "rejected"
+                        assert worker.op("reply", reply)["writes"] == 0
+                        print(
+                            "MQTT REAL C WORKER: candidate/request/grant/rejected ACK -> "
+                            "Core failed; production qualification closed; zero GPIO PASS",
+                            flush=True,
+                        )
+                finally:
+                    worker.close()
+
             try:
                 await on_off_cycle()
+                await worker_roundtrip()
                 for mode in (
                     "apply",
                     "gpio-failure",
@@ -1289,6 +1371,10 @@ def main():
             "FAULT SIMULATION: wall jump, suspend gap, rollback, unqualified bounds, health loss; default gate closed PASS",
             flush=True,
         )
+        from http_service_probe import check_http
+
+        asyncio.run(check_http(services, engine))
+
         env = os.environ.copy()
         env["TEST_POSTGRESQL_URL"] = services.url
         subprocess.run(
