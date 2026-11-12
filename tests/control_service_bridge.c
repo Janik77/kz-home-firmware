@@ -24,6 +24,7 @@ int main(int argc, char **argv) {
         char *payload=strchr(line,'\t'); if (payload) *payload++=0;
         kz_result result={0}; bool valid=false;
         if (!strcmp(line,"advance") && payload) fake_mono_ms+=strtoll(payload,NULL,10);
+        else if (!strcmp(line,"gpio-failure")) fake_gpio_fails=true;
         else if (!strcmp(line,"reconnect")) control_session(&state,++generation,wall);
         else if (!strcmp(line,"reboot")) { boot(); generation=1; }
         else if (!strcmp(line,"clock-fault")) { control_cancel(&state,0); fake_admitted=false; }

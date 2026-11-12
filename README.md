@@ -71,6 +71,10 @@ flash может раскрыть credentials. Будущее provisioning до�
 
 ## Сборка, flash, monitor
 
+Автоматические сборки обеих плат на закреплённом ESP-IDF 6.0.3 и команды
+повторения: [ESP_IDF_CI_RU.md](docs/ESP_IDF_CI_RU.md). Это проверка сборки
+без local config, не аппаратная квалификация.
+
 Активируйте ESP-IDF 6.0.x в терминале через его штатный export/activation script.
 Первой сборке нужен доступ к Espressif Component Registry для MQTT; версия и
 хеш закреплены в `dependencies.lock.esp32` / `dependencies.lock.esp32c6`.
@@ -332,3 +336,9 @@ Host runner `tests/run_host_tests.py` использует настоящий pa
 Эти тесты не моделируют физическую relay module или reset electrical waveform.
 
 Актуальный control ACL и ограничения commissioning: [CONTROL_PERMIT_V0.12.md](docs/CONTROL_PERMIT_V0.12.md).
+
+## Автоматическая host-проверка
+
+CI запускает host suite и совместимость с закреплённым Core без платы.
+Baseline, команды повторения, границы доверия и отличие от ESP-IDF/MQTT E2E:
+[HOST_CI_RU.md](docs/HOST_CI_RU.md).
