@@ -148,8 +148,16 @@ if args.services:
         "-DCONFIG_IDF_TARGET_ESP32=1", *sources[:3], "kz_relay/main/control.c",
         "tests/fake_platform.c", "tests/control_service_bridge.c", *crypto,
         "-o", str(service_bridge)], cwd=ROOT, check=True)
+    worker_bridge = build / ("worker_service_bridge" + exe.suffix)
+    subprocess.run(common + ["-std=gnu11", "-O1", "-Itests/mqtt_stubs",
+        "-DKZ_SERVICE_RANDOM=1", "-DKZ_LOCAL_CONFIG=1",
+        "-DCONFIG_MBEDTLS_HAVE_TIME_DATE=1", "-DKZ_BOARD_esp32_wroom=1",
+        "-DCONFIG_IDF_TARGET_ESP32=1", "tests/worker_service_bridge.c", *sources[:3],
+        "tests/fake_platform.c", "kz_relay/main/control.c", *crypto,
+        "-o", str(worker_bridge)], cwd=ROOT, check=True)
     command = [sys.executable, "-B", "-u", str(ROOT / "tests/service_integration.py"),
-        "--core-root", str(args.core_root), "--bridge", str(service_bridge)]
+        "--core-root", str(args.core_root), "--bridge", str(service_bridge),
+        "--worker-bridge", str(worker_bridge)]
     if args.full_core_services:
         command.append("--full-core")
     subprocess.run(command, cwd=ROOT, check=True)
