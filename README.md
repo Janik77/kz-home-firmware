@@ -332,3 +332,9 @@ Host runner `tests/run_host_tests.py` использует настоящий pa
 Эти тесты не моделируют физическую relay module или reset electrical waveform.
 
 Актуальный control ACL и ограничения commissioning: [CONTROL_PERMIT_V0.12.md](docs/CONTROL_PERMIT_V0.12.md).
+
+## Автоматическая host-проверка
+
+CI запускает host suite и совместимость с закреплённым Core без платы.
+Baseline, команды повторения, границы доверия и отличие от ESP-IDF/MQTT E2E:
+[HOST_CI_RU.md](docs/HOST_CI_RU.md).
