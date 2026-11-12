@@ -1,8 +1,12 @@
 # Воспроизводимый Core ↔ MQTT ↔ firmware C host цикл
 
 База: Firmware `c9ba186907fec6bf6237f4ce811272743ece0334`, Core
-`2359807c2781ce956ed43bc603772b66dd27955b`. Ветка самостоятельная: не требует
-merge `codex/firmware-host-ci`, `codex/core-ci` или изменений Core.
+`159eb98f2349b1aa2b8afd313c3a3f1fbf9b6bd2` из `codex/core-ci`
+([Core PR #32](https://github.com/Janik77/kz-home-core/pull/32)).
+Это точная зависимость для полного Core pytest: PR #32 исправляет устаревшие
+migration assertions 0007 → 0008, не меняя Core runtime. Workflow получает этот
+commit напрямую, merge для запуска не нужен. Firmware PR #6 не требуется.
+После принятия Core PR #32 pin можно отдельно обновить на проверенный main SHA.
 
 ## Запуск
 
@@ -60,7 +64,16 @@ Core simulator.Relay остаётся отдельной существующе�
 ## Статус проверки
 
 Локальная среда разработки не имеет Docker/PostgreSQL/Mosquitto; поэтому service
-E2E выполняется только в CI. Исторический отчёт
+E2E выполняется только в CI. Полный локальный host runner прошёл с CMake из
+`/tmp/kz-firmware-tools/bin/cmake` (передан через `--cmake`).
+
+Первый [CI run](https://github.com/Janik77/kz-home-firmware/actions/runs/43249957732)
+на Firmware `46ebb1ae7777fede32920145e03c0ca6f6bc2cf4` и Core main `2359807c`
+подтвердил ON/OFF, ACK/state, GPIO failure, все MQTT и PostgreSQL service сценарии,
+recovery/CAS и cleanup. Полный Core pytest: **693 passed, 7 failed, 10 skipped**.
+Все семь failures — прежние assertions migration head `0007` вместо `0008`.
+Именно поэтому финальный CI pin использует исправленные tests из Core PR #32;
+failures не исключены и не превращены в xfail. Исторический отчёт
 `CONTROL_SERVICE_INTEGRATION_V0.22_V0.12_RU.md` описывает прежний запуск на другой
 базе и не доказывает результат этого commit. Актуальное доказательство — успешный
 run workflow на SHA draft PR; до такого run новые service проверки не подтверждены.
