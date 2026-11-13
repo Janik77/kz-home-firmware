@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      CORE_SHA: 6783ce0347004d101ec2ffa5eb60c48946901786
+      CORE_SHA: a2bc83aa2451590f71ac34f9aad1c7c328bccb19
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Check out Firmware
