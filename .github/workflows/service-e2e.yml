@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      CORE_SHA: 159eb98f2349b1aa2b8afd313c3a3f1fbf9b6bd2
+      CORE_SHA: 9a6283c260c92acfe0447b0c425668cbb1a64002
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -37,6 +37,15 @@ jobs:
           cmake --version
           docker info --format '{{.ServerVersion}}'
           pkg-config --modversion openssl
+      - name: Assemble temporary reviewed Core 32 + 33 + 35 snapshot
+        working-directory: core
+        run: |
+          # #35 includes #32; these #33 paths do not overlap #35.
+          git fetch --no-tags --depth=1 origin bbb9d7af8647ecc727b9c8201a936f66fa99a91e
+          test "$(git rev-parse FETCH_HEAD)" = "bbb9d7af8647ecc727b9c8201a936f66fa99a91e"
+          git checkout bbb9d7af8647ecc727b9c8201a936f66fa99a91e -- app/transports/mqtt_client.py tests/test_mqtt_lifecycle.py docs/MQTT_SUBACK_VALIDATION.md
+          git diff --cached --check
+          echo "TEMPORARY_CORE_TREE=$(git write-tree)"
       - name: Install Core test dependencies
         run: |
           python3 -m venv "$RUNNER_TEMP/e2e-venv"
