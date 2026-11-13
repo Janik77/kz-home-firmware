@@ -1,0 +1,48 @@
+name: Firmware host compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CORE_SHA: 6783ce0347004d101ec2ffa5eb60c48946901786
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out Firmware
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: firmware
+          persist-credentials: false
+      - name: Check out reviewed Core baseline
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Janik77/kz-home-core
+          ref: ${{ env.CORE_SHA }}
+          path: core
+          persist-credentials: false
+      - name: Verify baseline and host tools
+        run: |
+          test "$(git -C core rev-parse HEAD)" = "$CORE_SHA"
+          python3 --version
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          gcc --version
+          cmake --version
+          pkg-config --modversion openssl
+      - name: Install pinned Core Python dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/core-venv"
+          "$RUNNER_TEMP/core-venv/bin/python" -m pip install --only-binary=:all: -r core/requirements.txt -c firmware/tests/ci-core-constraints.txt
+          "$RUNNER_TEMP/core-venv/bin/python" -m pip check
+      - name: Run host tests and actual Core compatibility
+        working-directory: firmware
+        run: |
+          "$RUNNER_TEMP/core-venv/bin/python" tests/run_host_tests.py --cc gcc --core-root "$GITHUB_WORKSPACE/core"
