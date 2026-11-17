@@ -427,31 +427,15 @@ def main():
                 )
             )
             s.flush()
-            s.add(
-                DeviceORM(
-                    id="test_relay",
-                    room_id="room",
-                    name="Lab",
-                    type="relay",
-                    capabilities=["on_off"],
-                    state={},
-                    online=True,
-                    metadata_={},
-                )
-            )
-            s.flush()
-            s.add(
-                DeviceORM(
-                    id="software_relay",
-                    room_id="room",
-                    name="Software",
-                    type="relay",
-                    capabilities=["on_off"],
-                    state={},
-                    online=True,
-                    metadata_={},
-                )
-            )
+            # Seed the historical 0006 schema without the current DeviceORM:
+            # later Core revisions add columns absent before this upgrade.
+            from sqlalchemy import MetaData, Table
+            historical_devices = Table("devices", MetaData(), autoload_with=engine)
+            for identifier, name in (("test_relay", "Lab"), ("software_relay", "Software")):
+                s.execute(historical_devices.insert().values(
+                    id=identifier, room_id="room", name=name, type="relay",
+                    capabilities=["on_off"], state={}, online=True, metadata={},
+                ))
             s.flush()
             s.add(
                 PhysicalDeviceORM(
