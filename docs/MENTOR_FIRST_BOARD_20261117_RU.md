@@ -1,4 +1,4 @@
-# Наставнику: первый стенд KZ Home, 17.11.2026
+# Наставнику: первый стенд KZ Home, актуализация 18.11.2026
 
 **Статус: аппаратные испытания НЕ выполнены. Это инструкция для согласования,
 не разрешение на прошивку, подключение реле или подачу питания на нагрузки.**
@@ -10,14 +10,40 @@
 
 ## Проверенная программная пара
 
-- Firmware: `adfbca7bc22f8707c5d612574b943510a29c7d2c`, PR #14.
-- Core: `f4b6787c6ee630d7cb7b2fd19b6fdb4c2b16d315`, PR #49.
+- Firmware: `95f71d9fcd4808709a093b4f324ff256742c54e3`, [PR #14](https://github.com/Janik77/kz-home-firmware/pull/14).
+- Core: `c03aa044642e8e09bf61ff51c35a46079d1118f0`, [PR #50](https://github.com/Janik77/kz-home-core/pull/50).
+- Web для программного стенда: `6f8f72f86f668b53f85c13054644c80427fe9eab`, [PR #28](https://github.com/Janik77/kz-home-web/pull/28).
+- Точная [инструкция отдельного программного стенда](https://github.com/Janik77/kz-home-core/blob/c03aa044642e8e09bf61ff51c35a46079d1118f0/docs/SOFTWARE_UPGRADE.md). Старый профиль не перепривязывать; произвольная миграция Web #27 → #28 не поддержана.
+- Эта ветка содержит только документацию поверх #15. Для сборки выбирать **Firmware SHA выше**, а не SHA документационного коммита.
 - ESP-IDF **6.0.3**, SDK commit `76f5dedd9950a3012fee8fb7d5586df21fc67802`.
 - Профили: `esp32_wroom` / target `esp32` и `esp32c6` / target `esp32c6`.
 - CI host, изолированные PostgreSQL/MQTT TLS и сборки обоих targets прошли.
   Это не проверка реальных Wi-Fi, питания, NVS, GPIO, RTOS или реле.
 - Production worker оставляет `qualified=false`; положительное управление
   физическим GPIO через Core не готово и не должно включаться ради демонстрации.
+
+## Доказательства программной проверки и их границы
+
+Итоговая пара Firmware `95f71d9` + Core `c03aa04` прошла отдельные
+запуски CI 17 ноября (статус повторно проверен 18 ноября):
+- [Host compatibility](https://github.com/Janik77/kz-home-firmware/actions/runs/44127319957).
+- [PostgreSQL / MQTT TLS service E2E](https://github.com/Janik77/kz-home-firmware/actions/runs/44127319885): 816 passed, 18 opt-in skipped.
+- [ESP-IDF WROOM / C6 builds](https://github.com/Janik77/kz-home-firmware/actions/runs/44127319879).
+- [Общий Web / Core / программное реле](https://github.com/Janik77/kz-home-core/actions/runs/44127156108).
+- [Постоянный профиль и backup/restore](https://github.com/Janik77/kz-home-core/actions/runs/44127156427).
+- [Узкий поддержанный upgrade](https://github.com/Janik77/kz-home-core/actions/runs/44127156336).
+
+Первоначальная версия этого документа ссылалась на другую ранее проверенную
+пару: Firmware `adfbca7bc22f8707c5d612574b943510a29c7d2c` +
+Core `f4b6787c6ee630d7cb7b2fd19b6fdb4c2b16d315` (#49).
+Это историческое доказательство, не замена перечисленным свежим запускам.
+Runtime прошивки при обновлении pins не изменён; изменение CI-фикстуры
+сохраняет проверку миграции исторической схемы.
+
+Ни одна из этих проверок не подтверждает работу реальной платы, электрическое
+OFF, безопасность реле, длительную эксплуатацию или установку на ПК владельца.
+Эта актуализация документа сама по себе не является новым аппаратным испытанием,
+разрешением на оборудование, merge или production deploy.
 
 ## Что прислать до первого включения
 
