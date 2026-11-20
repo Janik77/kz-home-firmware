@@ -413,8 +413,8 @@ def main():
         # (e.g. houses.metadata_revision) do not exist before this upgrade.
         with engine.begin() as c:
             historical = MetaData()
-            def seed(name, **values):
-                table = Table(name, historical, autoload_with=c)
+            def seed(table_name, /, **values):
+                table = Table(table_name, historical, autoload_with=c)
                 c.execute(table.insert().values(**values))
 
             seed("houses", id="test_house", name="Lab")
