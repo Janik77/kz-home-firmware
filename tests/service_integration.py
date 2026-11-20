@@ -332,17 +332,12 @@ def main():
     from alembic.config import Config
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
-    from sqlalchemy import create_engine, select, text
+    from sqlalchemy import MetaData, Table, create_engine, select, text
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.orm import Session
     from app.db import Base
     from app.models import (
-        HouseORM,
-        FloorORM,
-        RoomORM,
-        UserORM,
         DeviceORM,
-        PhysicalDeviceORM,
         DeviceCommandORM,
         ControlCommandORM,
     )
@@ -414,58 +409,40 @@ def main():
         authority = ControlAuthority(timer.clock(), gate=lambda *unused: None)
         with engine.begin() as c:
             command.upgrade(config(c), "0006_command_lifecycle")
-        with Session(engine) as s:
-            s.add(HouseORM(id="test_house", name="Lab"))
-            s.flush()
-            s.add(FloorORM(id="floor", house_id="test_house", name="Lab", order=0))
-            s.flush()
-            s.add(RoomORM(id="room", floor_id="floor", name="Lab"))
-            s.flush()
-            s.add(
-                UserORM(
-                    id="actor", email="actor@example.test", password_hash="not-a-login"
-                )
+        # Seed by the historical schema, not current ORM models. Additive columns
+        # (e.g. houses.metadata_revision) do not exist before this upgrade.
+        with engine.begin() as c:
+            historical = MetaData()
+            def seed(table_name, /, **values):
+                table = Table(table_name, historical, autoload_with=c)
+                c.execute(table.insert().values(**values))
+
+            seed("houses", id="test_house", name="Lab")
+            seed("floors", id="floor", house_id="test_house", name="Lab", order=0)
+            seed("rooms", id="room", floor_id="floor", name="Lab")
+            seed(
+                "users", id="actor", email="actor@example.test",
+                password_hash="not-a-login", is_active=True, is_superuser=False,
             )
-            s.flush()
-            # Seed the historical 0006 schema without the current DeviceORM:
-            # later Core revisions add columns absent before this upgrade.
-            from sqlalchemy import MetaData, Table
-            historical_devices = Table("devices", MetaData(), autoload_with=engine)
             for identifier, name in (("test_relay", "Lab"), ("software_relay", "Software")):
-                s.execute(historical_devices.insert().values(
-                    id=identifier, room_id="room", name=name, type="relay",
+                seed(
+                    "devices", id=identifier, room_id="room", name=name, type="relay",
                     capabilities=["on_off"], state={}, online=True, metadata={},
-                ))
-            s.flush()
-            s.add(
-                PhysicalDeviceORM(
-                    device_id="test_relay",
-                    hardware_id="lab-only-serial",
-                    hardware_model="esp32-relay-v1",
-                    protocol_version="v1",
-                    house_id="test_house",
-                    bound_device_id="test_relay",
-                    status="active",
-                    claim_code_hash=None,
                 )
+            seed(
+                "physical_devices", device_id="test_relay", hardware_id="lab-only-serial",
+                hardware_model="esp32-relay-v1", protocol_version="v1",
+                house_id="test_house", bound_device_id="test_relay", status="active",
+                claim_code_hash=None,
             )
             now = datetime.now(UTC)
-            s.add(
-                DeviceCommandORM(
-                    command_id=str(uuid4()),
-                    correlation_id=str(uuid4()),
-                    house_id="test_house",
-                    device_id="test_relay",
-                    requested_by="actor",
-                    idempotency_hash="a" * 64,
-                    requested_on=True,
-                    status="timed_out",
-                    created_at=now - timedelta(seconds=60),
-                    updated_at=now,
-                    expires_at=now - timedelta(seconds=30),
-                )
+            seed(
+                "device_commands", command_id=str(uuid4()), correlation_id=str(uuid4()),
+                house_id="test_house", device_id="test_relay", requested_by="actor",
+                idempotency_hash="a" * 64, requested_on=True, status="timed_out",
+                created_at=now - timedelta(seconds=60), updated_at=now - timedelta(seconds=60),
+                expires_at=now - timedelta(seconds=30),
             )
-            s.commit()
         with engine.begin() as c:
             before = c.execute(text("SELECT * FROM device_commands")).mappings().all()
             command.upgrade(config(c), "head")
@@ -497,7 +474,7 @@ def main():
             authority.initialize(s)
         timer.offset += authority.clock.fence_us
         print(
-            "POSTGRES: 0006->0007 preserved ledger, control metadata aligned, empty downgrade/upgrade PASS",
+            "POSTGRES: 0006->head preserved ledger, control metadata aligned, empty downgrade/upgrade PASS",
             flush=True,
         )
 
