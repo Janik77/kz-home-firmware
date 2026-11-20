@@ -420,7 +420,10 @@ def main():
             seed("houses", id="test_house", name="Lab")
             seed("floors", id="floor", house_id="test_house", name="Lab", order=0)
             seed("rooms", id="room", floor_id="floor", name="Lab")
-            seed("users", id="actor", email="actor@example.test", password_hash="not-a-login")
+            seed(
+                "users", id="actor", email="actor@example.test",
+                password_hash="not-a-login", is_active=True, is_superuser=False,
+            )
             for identifier, name in (("test_relay", "Lab"), ("software_relay", "Software")):
                 seed(
                     "devices", id=identifier, room_id="room", name=name, type="relay",
